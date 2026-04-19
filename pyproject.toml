@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kobsign-evidence"
+version = "0.1.0"
+description = "Independent verifier for KobSign-signed PDF documents. Verifies PAdES-LTA signatures, certificate chains, timestamps, and embedded evidence.json integrity without KobSign infrastructure."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "KobSign" }]
+keywords = ["pdf", "pades", "digital-signature", "evidence", "verification"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Legal Industry",
+  "Intended Audience :: Information Technology",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Security :: Cryptography",
+]
+dependencies = [
+  "pyhanko>=0.25",
+  "pikepdf>=8.0",
+  "cryptography>=42",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pyinstaller>=6",
+]
+
+[project.urls]
+Homepage = "https://kobsign.com/trust/verify"
+Repository = "https://github.com/KobSign/kobsign-evidence"
+
+[project.scripts]
+kobsign-evidence = "kobsign_evidence.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+kobsign_evidence = ["trust/*.pem"]
+
+[tool.pytest.ini_options]
+# This package is standalone; don't let globally-installed pytest plugins
+# (pytest-django, pytest-asyncio) interfere.
+addopts = "-p no:django -p no:asyncio --import-mode=importlib"
+testpaths = ["tests"]

@@ -1,0 +1,92 @@
+name: Build & test
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package + test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Run tests (unit only — e2e tests require monorepo)
+        run: pytest tests/test_evidence_hash.py tests/test_pdf_extract.py -q
+
+  build-binary:
+    name: Build binary (${{ matrix.os }})
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            binary-name: kobsign-evidence-windows-x64.exe
+            pyinstaller-args: ""
+          - os: macos-latest
+            binary-name: kobsign-evidence-macos-universal
+            pyinstaller-args: "--target-arch universal2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package + PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Build binary
+        run: |
+          pyinstaller --onefile --name kobsign-evidence ${{ matrix.pyinstaller-args }} ^
+            --collect-data kobsign_evidence ^
+            --hidden-import pyhanko ^
+            --hidden-import pyhanko_certvalidator ^
+            --hidden-import pikepdf ^
+            src/kobsign_evidence/__main__.py
+        shell: bash
+      - name: Rename binary
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            mv dist/kobsign-evidence.exe dist/${{ matrix.binary-name }}
+          else
+            mv dist/kobsign-evidence dist/${{ matrix.binary-name }}
+          fi
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary-name }}
+          path: dist/${{ matrix.binary-name }}
+
+  release:
+    name: Publish release artifacts
+    needs: build-binary
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
