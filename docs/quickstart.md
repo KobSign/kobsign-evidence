@@ -23,24 +23,27 @@ certutil -hashfile kobsign-evidence-windows-x64.exe SHA256
 
 Compare the output against the SHA-256 published on the release page.
 
-## macOS
+## macOS (Apple Silicon — M1/M2/M3/M4)
 
-1. Download `kobsign-evidence-macos-universal` from the
+1. Download `kobsign-evidence-macos-arm64` from the
    [latest release](https://github.com/KobSign/kobsign-evidence/releases).
 2. Open Terminal in the download folder.
 3. Make it executable and run:
 
    ```bash
-   chmod +x kobsign-evidence-macos-universal
-   ./kobsign-evidence-macos-universal signed-document.pdf
+   chmod +x kobsign-evidence-macos-arm64
+   ./kobsign-evidence-macos-arm64 signed-document.pdf
    ```
 
 macOS Gatekeeper may block the binary. Allow it via **System Settings
 → Privacy & Security → Allow anyway**. Hash verification:
 
 ```bash
-shasum -a 256 kobsign-evidence-macos-universal
+shasum -a 256 kobsign-evidence-macos-arm64
 ```
+
+**Intel Mac (pre-2020)?** Use the pip-install path below instead — the
+binary is Apple-Silicon-only.
 
 ## Linux / any Python 3.10+ environment
 

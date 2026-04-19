@@ -41,8 +41,8 @@ jobs:
             binary-name: kobsign-evidence-windows-x64.exe
             pyinstaller-args: ""
           - os: macos-latest
-            binary-name: kobsign-evidence-macos-universal
-            pyinstaller-args: "--target-arch universal2"
+            binary-name: kobsign-evidence-macos-arm64
+            pyinstaller-args: ""
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
