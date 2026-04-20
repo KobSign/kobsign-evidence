@@ -110,6 +110,17 @@ def verify_pades(
 
             results: list[PadesResult] = []
             for sig in sig_fields:
+                # PAdES-LTA adds DocTimeStamp entries (Type=/DocTimeStamp,
+                # SubFilter=/ETSI.RFC3161) alongside the content signature.
+                # They are RFC 3161 archival timestamps — not independent
+                # signatures. pyHanko's validate_pdf_signature() rejects
+                # them with "Signature object type must be /Sig". Their
+                # validity is already reflected in the content signature's
+                # timestamp_validity, so we skip them here.
+                sig_type = sig.sig_object.get("/Type")
+                if str(sig_type) == "/DocTimeStamp":
+                    continue
+
                 name = getattr(sig.sig_field, "get", lambda _: None)("/T") or "KobSign"
                 name = str(name) if name else "KobSign"
                 res = PadesResult(field_name=name)

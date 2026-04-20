@@ -28,7 +28,12 @@ from .verifier import verify
 def _format_verbose(result) -> str:
     lines = []
     for layer in result.layers:
-        mark = "OK  " if layer.ok else "FAIL"
+        if layer.na:
+            mark = "N/A "
+        elif layer.ok:
+            mark = "OK  "
+        else:
+            mark = "FAIL"
         lines.append(f"  [{mark}] {layer.name}: {layer.detail}")
     verdict = "VERIFIED" if result.verified else "FAILED"
     header = (

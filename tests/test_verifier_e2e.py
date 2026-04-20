@@ -33,7 +33,14 @@ class TestValidSignedPDF:
         assert data is not None
         parsed = json.loads(data)
         assert parsed["document_title"] == "Verifier fixture"
-        assert parsed["_schema"]["version"] == "3.4.0"
+        # Schema version is bumped regularly in the backend; assert shape
+        # rather than a pinned value so the verifier suite does not have to
+        # track every schema bump. The fixture must carry *some* schema
+        # version, and it must be 3.1.0+ (the version that introduced
+        # canonicalization — below this, layer 5 becomes N/A).
+        version_str = parsed["_schema"]["version"]
+        parts = tuple(int(p) for p in version_str.split("."))
+        assert parts >= (3, 1, 0), f"fixture schema {version_str} predates canonicalization"
 
     def test_evidence_hash_matches_on_valid_pdf(self, signed_pdf_pair):
         valid, _ = signed_pdf_pair

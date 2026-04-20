@@ -19,6 +19,28 @@ from dataclasses import dataclass
 
 SUPPORTED_CANONICALIZATION_VERSIONS = frozenset({"1"})
 
+# Canonicalization protocol was introduced in evidence schema 3.1.0 (Sprint C,
+# 2026-04-17). Evidence packages from earlier schemas (2.x, 3.0.x) have no
+# ``canonicalization_version`` field. Their integrity is still guaranteed by
+# the embedding PDF's PAdES-LTA signature — evidence.json is attached before
+# signing and is therefore within the signed byte range. The canonicalization
+# hash is a defence-in-depth layer, not the primary integrity guarantee.
+CANONICALIZATION_INTRODUCED_AT = (3, 1, 0)
+
+
+def _parse_schema_version(version: str | None) -> tuple[int, int, int] | None:
+    """Parse semantic schema version like ``"3.1.0"``. Return ``None`` if
+    the string is missing or malformed — caller decides how to interpret."""
+    if not isinstance(version, str):
+        return None
+    parts = version.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        return (int(parts[0]), int(parts[1]), int(parts[2]))
+    except ValueError:
+        return None
+
 
 @dataclass(frozen=True)
 class EvidenceHashResult:
@@ -29,6 +51,10 @@ class EvidenceHashResult:
     computed_hash: str
     canonicalization_version: str | None
     reason: str | None = None  # None when ok=True
+    # True when the evidence package predates the canonicalization protocol
+    # (schema < 3.1.0). The caller should treat this as "not applicable"
+    # rather than "failed" — primary integrity is the PAdES-LTA signature.
+    not_applicable: bool = False
 
 
 def canonicalize(evidence: dict) -> bytes:
@@ -80,6 +106,27 @@ def verify_evidence_hash(evidence: dict) -> EvidenceHashResult:
     claimed = evidence.get("evidence_json_hash", "")
     schema = evidence.get("_schema", {}) if isinstance(evidence.get("_schema"), dict) else {}
     version = schema.get("canonicalization_version")
+    schema_version_str = schema.get("version")
+    schema_version = _parse_schema_version(schema_version_str)
+
+    # Evidence schemas older than 3.1.0 predate the canonicalization protocol.
+    # Their integrity is guaranteed by the PAdES-LTA signature of the enclosing
+    # PDF (evidence.json is embedded before signing). Mark as not-applicable
+    # rather than failed — the overall verdict is not weakened by absence of a
+    # defence-in-depth layer that did not exist when the document was signed.
+    if version is None and schema_version is not None and schema_version < CANONICALIZATION_INTRODUCED_AT:
+        return EvidenceHashResult(
+            ok=False,
+            claimed_hash=claimed,
+            computed_hash="",
+            canonicalization_version=None,
+            reason=(
+                f"N/A for schema {schema_version_str} (canonicalization "
+                f"protocol introduced in 3.1.0; integrity guaranteed by "
+                f"the enclosing PDF's PAdES-LTA signature)"
+            ),
+            not_applicable=True,
+        )
 
     if not claimed:
         return EvidenceHashResult(

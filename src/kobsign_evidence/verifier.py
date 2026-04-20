@@ -25,6 +25,10 @@ class LayerResult:
     name: str
     ok: bool
     detail: str = ""
+    # True when the layer does not apply to this document (e.g. a feature
+    # introduced in a later schema version than the document uses). Layers
+    # marked N/A do not count against the overall verdict.
+    na: bool = False
 
 
 @dataclass
@@ -41,7 +45,7 @@ class VerificationResult:
     @property
     def failed_layer(self) -> LayerResult | None:
         for layer in self.layers:
-            if not layer.ok:
+            if not layer.ok and not layer.na:
                 return layer
         return None
 
@@ -143,7 +147,12 @@ def _layer_5_evidence_hash(pdf_path: str) -> tuple[LayerResult, dict | None, str
     schema = evidence.get("_schema", {}) if isinstance(evidence.get("_schema"), dict) else {}
     schema_version = schema.get("version")
     return (
-        LayerResult("evidence.json integrity", result.ok, detail),
+        LayerResult(
+            "evidence.json integrity",
+            result.ok,
+            detail,
+            na=result.not_applicable,
+        ),
         evidence,
         schema_version,
         result.canonicalization_version,
@@ -215,7 +224,10 @@ def verify(pdf_path: str) -> VerificationResult:
     layer6 = _layer_6_document_hashes(pdf_path, evidence)
     layers.append(layer6)
 
-    verified = all(layer.ok for layer in layers)
+    # A layer that does not apply to this document (``na=True``) does not
+    # count against the overall verdict. Primary integrity (PAdES-LTA,
+    # certificate chain, qualified timestamp) must still pass.
+    verified = all(layer.ok or layer.na for layer in layers)
     return VerificationResult(
         verified=verified,
         layers=layers,
