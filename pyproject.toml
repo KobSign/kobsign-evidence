@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kobsign-evidence"
-version = "0.1.1"
+version = "0.1.2"
 description = "Independent verifier for KobSign-signed PDF documents. Verifies PAdES-LTA signatures, certificate chains, timestamps, and embedded evidence.json integrity without KobSign infrastructure."
 readme = "README.md"
 license = { file = "LICENSE" }
