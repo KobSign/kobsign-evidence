@@ -1,28 +1,99 @@
 """Shared fixtures — including signed-PDF generation for end-to-end tests.
 
-These fixtures reach into the KobSign backend (src/) to produce
-realistic signed PDFs. The backend isn't installed as a package, so we
-add it to sys.path on demand. End-to-end tests are automatically skipped
-if the backend isn't available (e.g. when the verifier is installed on
-a fresh machine with only the PyPI dependencies).
+Two families of fixture live here.
+
+``signed_pdf_pair`` and friends reach into the KobSign backend (src/) to
+produce PDFs signed by the real production path. They skip when the
+backend is absent, which is most machines.
+
+``standalone_*`` fixtures build signed PDFs from pyHanko alone (see
+``pdf_factory.py``). They never skip. The negative tests — tampered file
+rejected, foreign certificate never trusted, content appended after
+signing detected — hang off these, because a security guarantee that is
+only tested inside the monorepo is a guarantee nobody outside can check.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
-# The verifier package lives at ../kobsign-evidence — add ../src for
-# backend imports when running tests from the monorepo.
-_MONOREPO_SRC = Path(__file__).resolve().parents[2] / "src"
+# pytest runs with --import-mode=importlib (see pyproject.toml), which does
+# not put the test directory on sys.path. Put it there ourselves so the
+# test modules can ``import pdf_factory``.
+_TESTS_DIR = Path(__file__).resolve().parent
+if str(_TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TESTS_DIR))
+
+import pdf_factory  # noqa: E402
+
+
+def _find_monorepo_src() -> Path | None:
+    """Locate the KobSign backend, or ``None`` when it is not around.
+
+    The verifier normally sits at ``<monorepo>/kobsign-evidence``, so the
+    backend is two levels up. Inside a git worktree it is further away and
+    the fixed relative path silently misses — which used to mean the
+    end-to-end tests skipped without anyone noticing. Walk up instead, and
+    let ``KOBSIGN_BACKEND_SRC`` override.
+    """
+    override = os.environ.get("KOBSIGN_BACKEND_SRC")
+    if override:
+        candidate = Path(override)
+        return candidate if (candidate / "kobsign" / "settings.py").is_file() else None
+
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "src"
+        if (candidate / "kobsign" / "settings.py").is_file():
+            return candidate
+    return None
+
+
+_MONOREPO_SRC = _find_monorepo_src()
+
+
+@pytest.fixture(scope="session")
+def signer_identity() -> pdf_factory.TestIdentity:
+    """A self-signed signer. Not in the bundled trust roots — by design."""
+    return pdf_factory.TestIdentity("Standalone Test Signer")
+
+
+@pytest.fixture(scope="session")
+def tsa_identity() -> pdf_factory.TestIdentity:
+    """A self-signed timestamping authority for building LTA fixtures."""
+    return pdf_factory.TestIdentity("Standalone Test TSA", timestamping=True)
+
+
+@pytest.fixture(scope="session")
+def standalone_signed_pdf(signer_identity) -> bytes:
+    """One page, one approval signature, nothing appended afterwards."""
+    return pdf_factory.sign(pdf_factory.blank_pdf(), signer_identity)
+
+
+@pytest.fixture(scope="session")
+def standalone_multi_signer_pdf(signer_identity, standalone_signed_pdf) -> bytes:
+    """Two signers — a legitimate incremental update on top of the first."""
+    return pdf_factory.add_second_signature(standalone_signed_pdf, signer_identity)
+
+
+@pytest.fixture(scope="session")
+def standalone_lta_pdf(signer_identity, tsa_identity, standalone_signed_pdf) -> bytes:
+    """A signature followed by an archival DocTimeStamp — the LTA shape."""
+    return pdf_factory.add_archival_timestamp(
+        standalone_signed_pdf,
+        tsa_identity,
+        [signer_identity.asn1_cert, tsa_identity.asn1_cert],
+    )
 
 
 @pytest.fixture(scope="session")
 def backend_available() -> bool:
     """True when the KobSign backend is importable (monorepo checkout)."""
-    if not _MONOREPO_SRC.is_dir():
+    if _MONOREPO_SRC is None:
         return False
     if str(_MONOREPO_SRC) not in sys.path:
         sys.path.insert(0, str(_MONOREPO_SRC))
