@@ -104,7 +104,7 @@ class TestFullVerifier:
         valid, _ = signed_pdf_pair
         result = verify(str(valid))
         assert result.signature_count >= 1
-        assert len(result.layers) == 6
+        assert len(result.layers) == 8
         # Without test trust roots, layer 3 will fail for the self-signed cert,
         # so the overall result is False. That's expected — the CLI reports
         # a specific layer failure which is what the user sees.
@@ -113,8 +113,10 @@ class TestFullVerifier:
         assert "PAdES-LTA" in layer_names[1]
         assert "Certificate chain" in layer_names[2]
         assert "Qualified timestamp" in layer_names[3]
-        assert "evidence.json" in layer_names[4]
-        assert "Document hashes" in layer_names[5]
+        assert "Post-signature revisions" in layer_names[4]
+        assert "evidence.json" in layer_names[5]
+        assert "Document hashes" in layer_names[6]
+        assert "Delivery trail" in layer_names[7]
 
     def test_self_signed_fails_certificate_chain_without_override(self, signed_pdf_pair):
         """Production invariant: a PDF signed with a random self-signed cert
@@ -125,3 +127,25 @@ class TestFullVerifier:
         layer3 = result.layers[2]
         assert "Certificate chain" in layer3.name
         assert not layer3.ok, "self-signed cert must not chain to DigiCert roots"
+
+    def test_production_output_has_no_post_signature_revisions(self, signed_pdf_pair):
+        """What the backend emits must not trip the appended-content check.
+
+        The standalone tests prove the check fires on a tampered file; this
+        one proves it stays quiet on a real one.
+        """
+        valid, _ = signed_pdf_pair
+        result = verify(str(valid))
+        layer5 = next(
+            layer for layer in result.layers if "Post-signature revisions" in layer.name
+        )
+        assert layer5.ok, layer5.detail
+
+    def test_delivery_layer_never_fails_a_document_that_lacks_it(self, signed_pdf_pair):
+        """A delivery trail is an addition in schema 3.12.0, not a requirement."""
+        valid, _ = signed_pdf_pair
+        result = verify(str(valid))
+        layer8 = next(
+            layer for layer in result.layers if "Delivery trail" in layer.name
+        )
+        assert layer8.ok or layer8.na, layer8.detail

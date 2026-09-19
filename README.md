@@ -13,19 +13,35 @@ security researchers.
 
 ## What it checks
 
-Six independent layers:
+Eight independent layers:
 
 | # | Layer | What it proves |
 |---|---|---|
 | 1 | PDF structure | The file is a well-formed PDF |
-| 2 | PAdES-LTA signature | The document bytes match what was signed — no modification after signing |
+| 2 | PAdES-LTA signature | The bytes the signature covers still hash to the signed value |
 | 3 | Certificate chain | The signer's certificate chains to a bundled, trusted root |
 | 4 | Qualified timestamp | The signature is timestamped by a qualified TSA |
-| 5 | `evidence.json` integrity | The machine-readable audit trail matches its own SHA-256 hash |
-| 6 | Document hashes | The original document hash is recorded, hex-well-formed, and ready for comparison |
+| 5 | Post-signature revisions | Nothing of substance was appended after the last signature |
+| 6 | `evidence.json` integrity | The machine-readable audit trail matches its own SHA-256 hash |
+| 7 | Document hashes | The original document hash is recorded, hex-well-formed, and ready for comparison |
+| 8 | Delivery trail | The recorded delivery events are well-formed, and each states its own limits |
 
-Every layer reports `OK` or `FAIL` with a specific reason. The overall
-verdict is the single bit courts care about.
+Every layer reports `OK`, `FAIL` or `N/A` with a specific reason. The
+overall verdict is the single bit courts care about.
+
+Layers 2 and 5 are separate on purpose. A PDF grows by incremental
+update: new bytes are appended and the original bytes stay exactly as
+they were. A signature over the original byte range therefore keeps
+verifying after someone has appended a revision that adds a page, an
+annotation or a different visible value. The reader sees the last
+revision; the signature covers the first. Layer 5 is what closes that
+gap — legitimate archival timestamps and later signers are allowed
+through, anything else is reported.
+
+A layer marked `N/A` does not apply to the document in hand — typically
+a feature added in an evidence schema newer than the one the document
+was sealed under. `N/A` never turns a verdict red: a signature made in
+2026 is not retroactively weakened by a field introduced in 2027.
 
 ## Install
 
@@ -52,6 +68,23 @@ kobsign-evidence signed-document.pdf --verbose
 # Machine-readable JSON
 kobsign-evidence signed-document.pdf --json
 ```
+
+### Reading the delivery trail
+
+When a document carries one, `--verbose` and `--json` print what was
+recorded about the signing invitation — that a provider accepted it,
+that a tracking pixel loaded, that a link was followed.
+
+Each event is printed with the `proves` and `does_not_prove` statement
+the file itself carries, verbatim. This tool does not summarise them,
+and neither should a report built on it. `tracking_pixel_loaded` is the
+case that matters: privacy proxies such as Apple Mail Privacy Protection
+load images automatically, so a loaded pixel is not a person reading
+anything.
+
+A missing event means it was not recorded, not that it did not happen.
+That the signature was completed is established server-side and recorded
+in the signer's `signed_at` — it does not depend on e-mail at all.
 
 Exit codes:
 

@@ -25,6 +25,32 @@ from . import __version__
 from .verifier import verify
 
 
+def _format_delivery(delivery) -> list[str]:
+    """Render the delivery trail using the file's own wording.
+
+    ``proves`` and ``does_not_prove`` are printed verbatim. The tool does
+    not summarise them, because every shorter phrasing overclaims: a
+    loaded tracking pixel may be Apple Mail Privacy Protection rather than
+    a person, and "opened" would put that in a court's hands as fact.
+    """
+    if delivery is None or not delivery.events:
+        return []
+    lines = ["", "Delivery trail:"]
+    current_signer: int | None = None
+    for event in delivery.events:
+        if event.signer_index != current_signer:
+            current_signer = event.signer_index
+            who = event.signer_name or f"signer {event.signer_index}"
+            lines.append(f"  {who}:")
+        lines.append(f"    {event.at}  {event.event}")
+        lines.append(f"      proves:         {event.proves}")
+        if event.does_not_prove:
+            lines.append(f"      does not prove: {event.does_not_prove}")
+    for note in delivery.notes:
+        lines.append(f"  Note: {note}")
+    return lines
+
+
 def _format_verbose(result) -> str:
     lines = []
     for layer in result.layers:
@@ -35,6 +61,7 @@ def _format_verbose(result) -> str:
         else:
             mark = "FAIL"
         lines.append(f"  [{mark}] {layer.name}: {layer.detail}")
+    lines.extend(_format_delivery(result.delivery))
     verdict = "VERIFIED" if result.verified else "FAILED"
     header = (
         f"kobsign-evidence v{__version__}\n"
@@ -55,6 +82,14 @@ def _format_json(result) -> str:
         "canonicalization_version": result.canonicalization_version,
         "layers": [asdict(layer) for layer in result.layers],
     }
+    if result.delivery is not None and result.delivery.events:
+        # Events are emitted with their own proves / does_not_prove strings
+        # so a downstream consumer cannot restate the trail more strongly
+        # than the file does.
+        payload["delivery"] = {
+            "events": [asdict(event) for event in result.delivery.events],
+            "notes": result.delivery.notes,
+        }
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 

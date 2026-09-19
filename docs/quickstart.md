@@ -58,9 +58,9 @@ kobsign-evidence signed-document.pdf
 VERIFIED
 ```
 
-All six verification layers passed. The document is intact, the
-certificate chain is trusted, the timestamp is valid, and the embedded
-evidence record is unmodified.
+All eight verification layers passed. The document is intact, nothing
+was appended after signing, the certificate chain is trusted, the
+timestamp is valid, and the embedded evidence record is unmodified.
 
 ```
 FAILED: <specific reason>
@@ -68,13 +68,19 @@ FAILED: <specific reason>
 
 The tool identifies the first failing layer. Common reasons:
 
-- `document has been modified after signing` — layer 2
+- `the signed bytes have been altered` — layer 2
 - `signer certificate does not chain to a trusted root` — layer 3
 - `no qualified timestamp present` — layer 4
-- `evidence.json hash mismatch — content has been modified` — layer 5
+- `content was changed after this signature` — layer 5
+- `evidence.json hash mismatch — content has been modified` — layer 6
 
-Run with `--verbose` for a breakdown of all six layers. Run with
-`--json` for a machine-readable report.
+Run with `--verbose` for a breakdown of all eight layers, including the
+delivery trail if the document carries one. Run with `--json` for a
+machine-readable report.
+
+A layer shown as `N/A` rather than `OK` or `FAIL` does not apply to this
+document — usually a field introduced in a newer evidence schema than
+the one it was sealed under. It does not count against the verdict.
 
 ## Exit codes
 
