@@ -58,9 +58,10 @@ kobsign-evidence signed-document.pdf
 VERIFIED
 ```
 
-All eight verification layers passed. The document is intact, nothing
-was appended after signing, the certificate chain is trusted, the
-timestamp is valid, and the embedded evidence record is unmodified.
+All verification layers passed. The document is intact, nothing was
+appended after signing, the certificate chain is trusted, the timestamp
+comes from an authority that chains to a bundled root, and the embedded
+evidence record is unmodified.
 
 ```
 FAILED: <specific reason>
@@ -73,10 +74,27 @@ The tool identifies the first failing layer. Common reasons:
 - `no qualified timestamp present` — layer 4
 - `content was changed after this signature` — layer 5
 - `evidence.json hash mismatch — content has been modified` — layer 6
+- `the QR was signed over a different evidence.json` — layer 9
 
-Run with `--verbose` for a breakdown of all eight layers, including the
+Run with `--verbose` for a breakdown of every layer, including the
 delivery trail if the document carries one. Run with `--json` for a
 machine-readable report.
+
+## Checking the QR on the certificate page
+
+If you are holding a printout, scan its data QR with any QR reader and
+pass the text back in:
+
+```bash
+kobsign-evidence signed-document.pdf --qr "6BF..."
+kobsign-evidence signed-document.pdf --qr-file scan.txt
+```
+
+This answers a question the file alone cannot: whether the page in your
+hand describes the document on your screen. Note that KobSign's
+production signing key does not exist yet — until the signing ceremony
+is held, this check reports that no archived key matches, rather than
+passing.
 
 A layer shown as `N/A` rather than `OK` or `FAIL` does not apply to this
 document — usually a field introduced in a newer evidence schema than

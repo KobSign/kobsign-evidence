@@ -10,6 +10,7 @@ Verifies a signed PDF document without any KobSign infrastructure:
     6. evidence.json hash (reproducible canonicalization)
     7. Document hashes in evidence.json match the actual document
     8. Delivery trail, reported in the file's own words
+    9. Data QR from the certificate page, cross-checked against this PDF
 
 Public API:
     verify(pdf_path) -> VerificationResult
@@ -17,5 +18,5 @@ Public API:
 
 from .verifier import VerificationResult, verify
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = ["verify", "VerificationResult", "__version__"]

@@ -1,5 +1,5 @@
 """
-Main verifier — orchestrates eight independent verification layers.
+Main verifier — orchestrates nine independent verification layers.
 
 The verifier never raises from ``verify()``. Every failure mode is
 reported as ``ok=False`` plus a human-readable reason on the layer. A
@@ -16,6 +16,7 @@ from .delivery import DeliveryResult, validate_delivery
 from .evidence import verify_evidence_hash
 from .pades import verify_pades
 from .pdf_extract import extract_attachment, list_attachments
+from .qr import QrResult, verify_data_qr
 
 
 @dataclass
@@ -44,6 +45,8 @@ class VerificationResult:
     # The delivery trail, when the document carries one. Reported verbatim —
     # see the module docstring of ``delivery.py``.
     delivery: DeliveryResult | None = None
+    # The data QR, when the caller supplied one off a printout.
+    qr: QrResult | None = None
 
     @property
     def failed_layer(self) -> LayerResult | None:
@@ -61,6 +64,30 @@ def _layer_1_structure(pdf_path: str) -> LayerResult:
     return LayerResult(
         "PDF structure", True, f"{len(attachments)} embedded attachments"
     )
+
+
+def _timestamp_reason(overall) -> str:
+    """One line on what backs the document's date, in the honest direction.
+
+    A timestamp token that no bundled root vouches for is not a weaker
+    timestamp, it is a different claim: someone stamped this, and we
+    cannot tell you who. Say that, rather than reporting the token.
+    """
+    if overall.has_qualified_timestamp:
+        authority = next(
+            (s.timestamp_authority for s in overall.signatures if s.timestamp_authority),
+            None,
+        )
+        who = authority or "a bundled qualified TSA"
+        if overall.trusted_doctimestamp_count:
+            return (
+                f"archival DocTimeStamp from {who}, chaining to a bundled "
+                f"trust root"
+            )
+        return f"timestamped by {who}, chaining to a bundled trust root"
+    if overall.timestamp_problems:
+        return "; ".join(overall.timestamp_problems)
+    return "no qualified timestamp present"
 
 
 def _layers_2_3_4_5_pades(
@@ -89,26 +116,29 @@ def _layers_2_3_4_5_pades(
             0,
         )
 
-    intact = all(s.intact for s in overall.signatures)
+    intact = all(s.intact for s in overall.signatures) and not overall.other_problems
     trusted = all(s.trusted for s in overall.signatures)
-    has_ts = all(s.has_timestamp for s in overall.signatures)
+    has_ts = overall.has_qualified_timestamp
 
     # Deliberately narrow wording. ``intact`` says the bytes the signature
     # covers still hash to the signed value — nothing about bytes appended
     # afterwards. That is the Post-signature revisions layer's claim to make.
-    intact_reason = "signed byte range is unmodified" if intact else (
-        "the signed bytes have been altered"
-    )
+    if overall.other_problems:
+        intact_reason = "; ".join(overall.other_problems)
+    elif intact:
+        intact_reason = "signed byte range is unmodified"
+    else:
+        intact_reason = "the signed bytes have been altered"
     trusted_reason = (
         "chain resolves to a bundled trust root"
         if trusted
         else "signer certificate does not chain to a trusted root"
     )
-    ts_reason = (
-        f"timestamped by {overall.signatures[0].signer_issuer or 'qualified TSA'}"
-        if has_ts
-        else "no qualified timestamp present"
-    )
+    # Layer 4 is about the authority, not about the token. Name the TSA whose
+    # chain was actually checked — naming the signer's own issuer here, as an
+    # earlier version did, tells a reader the document was timestamped by a
+    # party that never timestamped anything.
+    ts_reason = _timestamp_reason(overall)
 
     if overall.revision_problems:
         revisions_reason = "; ".join(overall.revision_problems)
@@ -164,6 +194,20 @@ def _layer_6_evidence_hash(pdf_path: str) -> tuple[LayerResult, dict | None, str
             None,
             None,
         )
+    if not isinstance(evidence, dict):
+        # Valid JSON, wrong shape. Every layer below reads fields off this
+        # object; handing them a list would take the whole verifier down
+        # with an exception instead of a verdict.
+        return (
+            LayerResult(
+                "evidence.json integrity",
+                False,
+                "evidence.json is not a JSON object",
+            ),
+            None,
+            None,
+            None,
+        )
 
     result = verify_evidence_hash(evidence)
     detail = (
@@ -186,12 +230,63 @@ def _layer_6_evidence_hash(pdf_path: str) -> tuple[LayerResult, dict | None, str
     )
 
 
+# What the producing pipeline writes into ``original_document_hash``:
+# SHA-256 of the uploaded file, 32 bytes. The data-QR builder enforces the
+# same width and issues no QR for anything else, so this is an invariant of
+# the format rather than a convention. It is used to flag a digest of
+# another width — never to name the algorithm behind one, which only
+# evidence.json could do and does not.
+EXPECTED_DOCUMENT_DIGEST_BYTES = 32
+
+
+def _describe_digest(orig: str) -> str:
+    """Say what is recorded, and say that its algorithm is not stated.
+
+    Two temptations are declined here, and both would put a claim in
+    front of a court that the file never made.
+
+    ``hash_algorithm`` in evidence.json is not read. It is a compliance
+    label — never assigned in the producing codebase, grouped with
+    ``signature_standard`` and ``timestamp_authority``, and rendered on
+    the cover page as one item in "PAdES-LTA (ETSI) · PDF/A-3 (ISO) ·
+    SHA-256 · RFC 3161 TSA". It describes the signature and the
+    timestamp. Reading it as a label on this digest would be inventing a
+    statement out of an unrelated one.
+
+    Nor is the algorithm inferred from the digest's width: a width cannot
+    tell SHA-512 from SHA3-512, and guessing would only dress up the same
+    invention in arithmetic.
+
+    So the reader is told the width, told plainly that the file does not
+    name an algorithm, and told what KobSign's pipeline puts here — the
+    last attributed to the producer rather than to the document, because
+    someone holding the original needs to know what to hash it with.
+    """
+    digest_bytes = len(orig) // 2
+    if digest_bytes == EXPECTED_DOCUMENT_DIGEST_BYTES:
+        return (
+            f"{digest_bytes}-byte digest recorded; evidence.json does not "
+            f"state which algorithm produced it — KobSign's signing pipeline "
+            f"records SHA-256 here, so hash your copy of the original with "
+            f"SHA-256 to compare"
+        )
+    return (
+        f"{digest_bytes}-byte digest recorded, an unexpected width: this "
+        f"format records {EXPECTED_DOCUMENT_DIGEST_BYTES} bytes. "
+        f"evidence.json does not state which algorithm produced it, so what "
+        f"this value is cannot be established from the file"
+    )
+
+
 def _layer_7_document_hashes(pdf_path: str, evidence: dict | None) -> LayerResult:
     """Verify ``original_document_hash`` in evidence.json matches the user's
     uploaded PDF bytes.
 
-    KobSign stores ``original_document_hash`` (SHA3-512 of the uploaded
-    PDF, before any cover page / signatures are added). This verifier
+    KobSign stores ``original_document_hash`` — a digest of the uploaded
+    PDF, before any cover page or signature is added. evidence.json does
+    not record which algorithm produced it; see ``_describe_digest`` for
+    why neither the file's ``hash_algorithm`` field nor the digest's own
+    width is allowed to stand in for that. This verifier
     does NOT have access to the original PDF — it only has the final
     signed PDF, which contains the original PDF's *hash* but not its
     bytes. So this layer verifies internal consistency: the hash field is
@@ -226,11 +321,11 @@ def _layer_7_document_hashes(pdf_path: str, evidence: dict | None) -> LayerResul
             False,
             "original_document_hash is not a valid hex digest",
         )
-    algo = "SHA3-512" if len(orig) == 128 else f"{len(orig) * 4}-bit digest"
     return LayerResult(
         "Document hashes",
         True,
-        f"{algo} recorded; compare against the original PDF in your possession",
+        f"{_describe_digest(orig)}; compare against the original PDF in "
+        f"your possession",
     )
 
 
@@ -267,8 +362,55 @@ def _layer_8_delivery(evidence: dict | None) -> tuple[LayerResult, DeliveryResul
     return LayerResult("Delivery trail", True, detail), result
 
 
-def verify(pdf_path: str) -> VerificationResult:
-    """Run all eight layers and return a combined verification result."""
+def _layer_9_data_qr(
+    evidence: dict | None,
+    qr_payload: str | None,
+    extra_qr_keys: list[bytes] | None,
+) -> tuple[LayerResult, QrResult | None]:
+    """Cross-check the certificate page's data QR against this PDF.
+
+    The QR is read off paper by whoever is holding the printout, so it
+    arrives as text rather than out of the file. No QR supplied means
+    nothing to check — not-applicable. A QR that was supplied and does
+    not stand up is a failure, and never rounded back down to N/A: the
+    whole point of the code is that the paper and the file agree.
+    """
+    result = verify_data_qr(qr_payload, evidence, extra_public_keys=extra_qr_keys)
+    if result.not_applicable:
+        return (
+            LayerResult(
+                "Data QR",
+                False,
+                "no data QR supplied (pass --qr to check one from a printout)",
+                na=True,
+            ),
+            None,
+        )
+    if not result.ok:
+        return LayerResult("Data QR", False, result.reason or "did not verify"), result
+
+    payload = result.payload
+    assert payload is not None  # ok=True implies a parsed payload
+    detail = (
+        f"{result.algorithm} signature by archived key {result.kid.hex()} "
+        f"({result.key_source}); binds this PDF's evidence.json, "
+        f"{payload.signer_count} signer(s)"
+    )
+    return LayerResult("Data QR", True, detail), result
+
+
+def verify(
+    pdf_path: str,
+    *,
+    qr_payload: str | None = None,
+    extra_qr_keys: list[bytes] | None = None,
+) -> VerificationResult:
+    """Run all nine layers and return a combined verification result.
+
+    ``qr_payload`` is the base45 text from a certificate page's data QR,
+    when the reader has one. ``extra_qr_keys`` is for test fixtures, in
+    the same spirit as ``verify_pades(extra_trust_roots=...)``.
+    """
     layer1 = _layer_1_structure(pdf_path)
     layers: list[LayerResult] = [layer1]
     if not layer1.ok:
@@ -287,6 +429,9 @@ def verify(pdf_path: str) -> VerificationResult:
     layer8, delivery = _layer_8_delivery(evidence)
     layers.append(layer8)
 
+    layer9, qr = _layer_9_data_qr(evidence, qr_payload, extra_qr_keys)
+    layers.append(layer9)
+
     # A layer that does not apply to this document (``na=True``) does not
     # count against the overall verdict. Primary integrity (PAdES-LTA,
     # certificate chain, qualified timestamp, post-signature revisions)
@@ -299,4 +444,5 @@ def verify(pdf_path: str) -> VerificationResult:
         evidence_schema_version=schema_version,
         canonicalization_version=canon_version,
         delivery=delivery,
+        qr=qr,
     )

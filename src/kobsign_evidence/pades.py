@@ -4,8 +4,16 @@ PAdES-LTA signature verification via pyHanko.
 Performs layers 2–5 of the verifier:
     2. Signature is intact (document bytes match what was signed)
     3. Certificate chain resolves to a trusted root
-    4. Timestamp is present and from a qualified TSA
+    4. Timestamp is present AND the TSA's own chain resolves to a
+       trusted root
     5. Nothing of substance was appended after the last signature
+
+Layer 4 checks a chain, not a presence. A timestamp token proves only
+that someone held a key at some point; it is worth something in court
+because the authority behind it chains to a root the reader already
+trusts. That is the same check layer 3 makes of the signer, applied to
+the TSA — including the archival DocTimeStamps that PAdES-LTA is built
+out of, which carry the timestamp for the whole document.
 
 Layer 5 is not implied by layer 2. A PDF grows by incremental update:
 new bytes are appended and the original bytes stay byte-for-byte intact.
@@ -32,7 +40,11 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from pyhanko.pdf_utils.reader import PdfFileReader
 from pyhanko.sign.diff_analysis import DiffResult, ModificationLevel
-from pyhanko.sign.validation import SignatureCoverageLevel, validate_pdf_signature
+from pyhanko.sign.validation import (
+    SignatureCoverageLevel,
+    validate_pdf_signature,
+    validate_pdf_timestamp,
+)
 from pyhanko_certvalidator import ValidationContext
 
 # pyhanko + pyhanko_certvalidator log validation errors at WARNING level even
@@ -79,12 +91,22 @@ class PadesResult:
     has_timestamp: bool = False
     signer_subject: str | None = None
     signer_issuer: str | None = None
+    # A timestamp token is present (``has_timestamp``) and the TSA that
+    # issued it chains to a bundled trust root (``timestamp_trusted``).
+    # The two are deliberately separate: presence without trust is the
+    # case a report must not round up to "timestamped".
+    timestamp_trusted: bool = False
+    timestamp_authority: str | None = None
     timestamp_time: datetime | None = None
     # What came after this signature. ``coverage`` / ``modification_level``
     # are pyHanko's own names; both are None when the analysis could not run.
     coverage: str | None = None
     modification_level: str | None = None
     docmdp_ok: bool | None = None
+    # pyHanko's own aggregate judgment, kept as a backstop against our
+    # reading of the individual fields being too generous. None when the
+    # signature could not be validated at all.
+    bottom_line: bool | None = None
     errors: list[str] = field(default_factory=list)
 
 
@@ -98,15 +120,46 @@ class PadesOverall:
     # Number of archival DocTimeStamps (PAdES-LTA) found alongside the
     # content signatures.
     doctimestamp_count: int = 0
+    # How many of those archival timestamps were issued by a TSA whose own
+    # chain resolves to a bundled trust root. An untrusted one still counts
+    # as a DocTimeStamp — it just does not count as a qualified timestamp.
+    trusted_doctimestamp_count: int = 0
     # Human-readable descriptions of content appended after a signature.
     # Empty means nothing of substance was added after signing.
     revision_problems: list[str] = field(default_factory=list)
+    # Timestamp tokens that did not stand up — the wrong authority, or no
+    # authority this tool can chain to a bundled root. Reported by layer 4.
+    timestamp_problems: list[str] = field(default_factory=list)
+    # Anything else validation came back unhappy about: a signature pyHanko
+    # judges invalid for a reason none of our own layers named. Reported by
+    # layer 2, because that is where "the signature does not stand up" lives.
+    other_problems: list[str] = field(default_factory=list)
+
+    @property
+    def validation_problems(self) -> list[str]:
+        """Every non-revision problem found, in reporting order."""
+        return [*self.timestamp_problems, *self.other_problems]
+
+    @property
+    def has_qualified_timestamp(self) -> bool:
+        """Is the document timestamped by an authority we can vouch for?
+
+        Two shapes qualify. Either every content signature carries its own
+        trusted RFC 3161 timestamp token, or the document carries at least
+        one trusted archival DocTimeStamp — which is applied over the whole
+        file, signatures included, and is what PAdES-LTA actually uses.
+        """
+        if self.trusted_doctimestamp_count > 0:
+            return True
+        return bool(self.signatures) and all(
+            s.has_timestamp and s.timestamp_trusted for s in self.signatures
+        )
 
     @property
     def ok(self) -> bool:
         if self.signature_count == 0 or self.errors:
             return False
-        if self.revision_problems:
+        if self.revision_problems or self.validation_problems:
             return False
         return all(s.intact and s.trusted for s in self.signatures)
 
@@ -180,6 +233,36 @@ def _revision_problem(label: str, coverage, diff_result) -> str | None:
     return f"{label}: content was changed after this signature — {detail}"
 
 
+def _timestamp_problem(label: str, status) -> str | None:
+    """Judge a timestamp token. ``None`` means it stands up.
+
+    A token is only as good as the authority behind it. ``intact`` and
+    ``valid`` say the token was not tampered with and the maths checks
+    out — which a forger with their own key achieves too. ``trusted`` is
+    the one that says the TSA chains to a root bundled with this tool.
+    """
+    if not (status.intact and status.valid):
+        return f"{label}: the timestamp token is not cryptographically sound"
+    if not status.trusted:
+        authority = _subject_of(status)
+        return (
+            f"{label}: issued by {authority or 'an unknown authority'}, whose "
+            f"certificate does not chain to a bundled trust root"
+        )
+    return None
+
+
+def _subject_of(status) -> str | None:
+    """Human-readable subject of the certificate a status was built from."""
+    cert = getattr(status, "signing_cert", None)
+    if cert is None:
+        return None
+    try:
+        return cert.subject.human_friendly
+    except Exception:
+        return None
+
+
 def verify_pades(
     pdf_path: str, *, extra_trust_roots: list[bytes] | None = None
 ) -> PadesOverall:
@@ -205,7 +288,12 @@ def verify_pades(
 
             results: list[PadesResult] = []
             revision_problems: list[str] = []
+            timestamp_problems: list[str] = []
+            other_problems: list[str] = []
             doctimestamp_count = 0
+            trusted_doctimestamp_count = 0
+            doctimestamp_times: list[datetime] = []
+            doctimestamp_authorities: list[str] = []
 
             for sig in sig_fields:
                 # PAdES-LTA adds DocTimeStamp entries (Type=/DocTimeStamp,
@@ -223,12 +311,29 @@ def verify_pades(
                     doctimestamp_count += 1
                     label = f"archival timestamp {doctimestamp_count}"
                     try:
-                        sig.compute_integrity_info()
-                        problem = _revision_problem(
-                            label, sig.coverage, sig.diff_result
+                        ts_status = validate_pdf_timestamp(
+                            sig, validation_context=vc
                         )
                     except Exception as exc:
-                        problem = f"{label}: could not be analysed ({exc})"
+                        timestamp_problems.append(
+                            f"{label}: could not be validated ({exc})"
+                        )
+                        continue
+
+                    ts_problem = _timestamp_problem(label, ts_status)
+                    if ts_problem:
+                        timestamp_problems.append(ts_problem)
+                    else:
+                        trusted_doctimestamp_count += 1
+                        if ts_status.timestamp is not None:
+                            doctimestamp_times.append(ts_status.timestamp)
+                        authority = _subject_of(ts_status)
+                        if authority:
+                            doctimestamp_authorities.append(authority)
+
+                    problem = _revision_problem(
+                        label, ts_status.coverage, ts_status.diff_result
+                    )
                     if problem:
                         revision_problems.append(problem)
                     continue
@@ -241,13 +346,25 @@ def verify_pades(
                     status = validate_pdf_signature(sig, signer_validation_context=vc)
                     res.intact = bool(getattr(status, "intact", False))
                     res.trusted = bool(getattr(status, "trusted", False))
-                    res.has_timestamp = bool(getattr(status, "timestamp_validity", None))
                     if status.signing_cert is not None:
                         res.signer_subject = status.signing_cert.subject.human_friendly
                         res.signer_issuer = status.signing_cert.issuer.human_friendly
+
+                    # The timestamp token gets the same treatment as the
+                    # signer: presence is recorded, trust is decided by the
+                    # TSA's own chain. A token we cannot back is a problem
+                    # to report, not a field to leave unread.
                     tsv = getattr(status, "timestamp_validity", None)
+                    res.has_timestamp = tsv is not None
                     if tsv is not None:
                         res.timestamp_time = getattr(tsv, "timestamp", None)
+                        res.timestamp_authority = _subject_of(tsv)
+                        ts_problem = _timestamp_problem(
+                            f"signature {name!r} timestamp", tsv
+                        )
+                        res.timestamp_trusted = ts_problem is None
+                        if ts_problem:
+                            timestamp_problems.append(ts_problem)
 
                     coverage = getattr(status, "coverage", None)
                     res.coverage = _describe(coverage)
@@ -259,8 +376,34 @@ def verify_pades(
                     problem = _revision_problem(
                         f"signature {name!r}", coverage, getattr(status, "diff_result", None)
                     )
+                    if res.docmdp_ok is False and problem is None:
+                        # A certification signature that declared what later
+                        # revisions may change, and was changed beyond it.
+                        problem = (
+                            f"signature {name!r}: a later revision broke the "
+                            f"document modification policy this signature set"
+                        )
                     if problem:
                         revision_problems.append(problem)
+
+                    # pyHanko's aggregate judgment, as a backstop. Everything
+                    # above is our own reading of individual fields; if that
+                    # reading comes out green where pyHanko's does not, the
+                    # difference is ours to explain, and until it is explained
+                    # the file does not pass.
+                    bottom_line = getattr(status, "bottom_line", None)
+                    res.bottom_line = None if bottom_line is None else bool(bottom_line)
+                    already_flagged = (
+                        not res.intact
+                        or not res.trusted
+                        or problem is not None
+                        or (tsv is not None and not res.timestamp_trusted)
+                    )
+                    if res.bottom_line is False and not already_flagged:
+                        other_problems.append(
+                            f"signature {name!r}: pyHanko judges this signature "
+                            f"invalid for a reason none of the layers above named"
+                        )
                 except Exception as exc:
                     res.errors.append(f"validation error: {exc}")
                     revision_problems.append(
@@ -269,11 +412,28 @@ def verify_pades(
 
                 results.append(res)
 
+            # An archival DocTimeStamp is applied over the whole file, so a
+            # trusted one timestamps every signature under it. Carry its
+            # authority and time onto the signatures that have none of their
+            # own, so a report can name what actually backs the date.
+            for res in results:
+                if not res.has_timestamp and trusted_doctimestamp_count:
+                    res.timestamp_trusted = True
+                    res.timestamp_authority = (
+                        doctimestamp_authorities[-1] if doctimestamp_authorities else None
+                    )
+                    res.timestamp_time = (
+                        doctimestamp_times[-1] if doctimestamp_times else None
+                    )
+
             return PadesOverall(
                 signature_count=len(results),
                 signatures=results,
                 doctimestamp_count=doctimestamp_count,
+                trusted_doctimestamp_count=trusted_doctimestamp_count,
                 revision_problems=revision_problems,
+                timestamp_problems=timestamp_problems,
+                other_problems=other_problems,
             )
     except Exception as exc:
         return PadesOverall(signature_count=0, errors=[f"failed to open PDF: {exc}"])

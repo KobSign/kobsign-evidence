@@ -35,9 +35,14 @@ from datetime import datetime
 DELIVERY_INTRODUCED_AT = (3, 12, 0)
 
 # Event names the serializer emits, in the order the invitation travels.
-# An unrecognised name means the file was produced by something this
-# verifier does not know — exactly the case where a court should be told,
-# not reassured.
+# Confirmed against ``DELIVERY_EVENT_SEMANTICS`` in the KobSign repo: these
+# seven are the whole set. Completion of the signing itself is deliberately
+# not among them — it is established server-side and recorded in the
+# signer's ``signed_at``, not in the delivery trail.
+#
+# A name outside this list means the file was sealed by a producer younger
+# than this verifier. It is reported, never held against the document: see
+# ``_validate_event``.
 KNOWN_DELIVERY_EVENTS: tuple[str, ...] = (
     "provider_accepted",
     "recipient_server_accepted",
@@ -56,11 +61,16 @@ EVENTS_WITHOUT_DISCLAIMER: frozenset[str] = frozenset({"bounced"})
 
 @dataclass(frozen=True)
 class DeliveryEvent:
-    """One validated delivery event, as recorded in the file.
+    """One delivery event, as recorded in the file.
 
     ``proves`` / ``does_not_prove`` are carried verbatim from
     evidence.json. Callers render these strings; they must not paraphrase
     them into a claim the underlying signal cannot support.
+
+    ``known`` is False for an event name this verifier does not have in
+    ``KNOWN_DELIVERY_EVENTS``. Such an event is carried through exactly as
+    the file states it and vouched for by nothing: the verifier can repeat
+    it, but it cannot tell a reader what the name is supposed to mean.
     """
 
     signer_index: int
@@ -69,6 +79,7 @@ class DeliveryEvent:
     at: str
     proves: str
     does_not_prove: str | None = None
+    known: bool = True
 
 
 @dataclass(frozen=True)
@@ -81,10 +92,14 @@ class DeliveryResult:
     # the trail. Kept verbatim; de-duplicated across signers.
     notes: list[str] = field(default_factory=list)
     reason: str | None = None  # None when ok=True
-    # True when no signer carries a delivery block — an older schema, or a
-    # signer for whom nothing was recorded. Not a failure.
+    # True when the trail cannot be vouched for in full, but nothing about
+    # it is wrong: no signer carries a block at all (an older schema, or a
+    # signer for whom nothing was recorded), or the block holds an event
+    # name from a newer schema. Not a failure.
     not_applicable: bool = False
     signers_with_delivery: int = 0
+    # Event names this verifier does not know, in the order encountered.
+    unknown_events: list[str] = field(default_factory=list)
 
 
 def _parse_iso8601(value: str) -> datetime | None:
@@ -113,8 +128,30 @@ def _validate_event(
     name = raw.get("event")
     if not isinstance(name, str) or not name:
         return None, f"{where} has no event name"
+
     if name not in KNOWN_DELIVERY_EVENTS:
-        return None, f"{where} has unknown event name {name!r}"
+        # A newer producer. We do not know what this event is supposed to
+        # prove, so we demand no wording of it and check no shape beyond
+        # its name — a rule written for the seven names above would only
+        # be guesswork applied to an eighth. Whatever it carries is handed
+        # to the reader verbatim, and vouched for by nothing.
+        at = raw.get("at")
+        proves = raw.get("proves")
+        does_not_prove = raw.get("does_not_prove")
+        return (
+            DeliveryEvent(
+                signer_index=signer_index,
+                signer_name=signer_name,
+                event=name,
+                at=at if isinstance(at, str) else "",
+                proves=proves if isinstance(proves, str) else "",
+                does_not_prove=(
+                    does_not_prove if isinstance(does_not_prove, str) else None
+                ),
+                known=False,
+            ),
+            None,
+        )
 
     at = raw.get("at")
     if not isinstance(at, str) or not at:
@@ -164,6 +201,7 @@ def validate_delivery(evidence: dict) -> DeliveryResult:
 
     events: list[DeliveryEvent] = []
     notes: list[str] = []
+    unknown_events: list[str] = []
     signers_with_delivery = 0
 
     for index, signer in enumerate(signatures):
@@ -198,6 +236,8 @@ def validate_delivery(evidence: dict) -> DeliveryResult:
                 return DeliveryResult(ok=False, reason=error)
             assert event is not None  # _validate_event sets exactly one
             events.append(event)
+            if not event.known and event.event not in unknown_events:
+                unknown_events.append(event.event)
 
         note = block.get("note")
         if not isinstance(note, str) or not note.strip():
@@ -220,6 +260,26 @@ def validate_delivery(evidence: dict) -> DeliveryResult:
             reason=(
                 "no delivery trail recorded (schema before 3.12.0, or nothing "
                 "was recorded for any signer)"
+            ),
+        )
+
+    if unknown_events:
+        # Everything present is well-formed as far as this verifier can
+        # judge, but it cannot judge all of it. Reported, not counted
+        # against the document — the same treatment a field introduced
+        # after sealing gets everywhere else in this tool.
+        listed = ", ".join(repr(name) for name in unknown_events)
+        return DeliveryResult(
+            ok=False,
+            not_applicable=True,
+            events=events,
+            notes=notes,
+            signers_with_delivery=signers_with_delivery,
+            unknown_events=unknown_events,
+            reason=(
+                f"the delivery trail holds event name(s) {listed} from a "
+                f"schema newer than this verifier knows; they are reported "
+                f"as the file states them and vouched for by nothing"
             ),
         )
 

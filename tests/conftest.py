@@ -81,6 +81,14 @@ def standalone_multi_signer_pdf(signer_identity, standalone_signed_pdf) -> bytes
 
 
 @pytest.fixture(scope="session")
+def standalone_timestamped_pdf(signer_identity, tsa_identity) -> bytes:
+    """One signature carrying an RFC 3161 signature timestamp token."""
+    return pdf_factory.sign(
+        pdf_factory.blank_pdf(), signer_identity, tsa=tsa_identity
+    )
+
+
+@pytest.fixture(scope="session")
 def standalone_lta_pdf(signer_identity, tsa_identity, standalone_signed_pdf) -> bytes:
     """A signature followed by an archival DocTimeStamp — the LTA shape."""
     return pdf_factory.add_archival_timestamp(
@@ -154,7 +162,10 @@ def signed_pdf_pair(tmp_path, backend_available):
     package = DocumentEvidencePackage(
         document_title="Verifier fixture",
         koblink_id="KB-PERSON-VERIFY001-DOC-2026-00001",
-        original_document_hash="a" * 128,  # SHA3-512 hex length
+        # A placeholder, not a digest. The pipeline writes a 64-character
+        # SHA-256 here; this fixture predates that being pinned down and
+        # is left as-is so it keeps exercising the unexpected-width path.
+        original_document_hash="a" * 128,
         signature_standard="PAdES-LTA",
         signatures=[signer],
     )

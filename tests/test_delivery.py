@@ -83,11 +83,58 @@ class TestEventNames:
         assert result.ok, result.reason
         assert result.events[0].event == name
 
-    def test_unknown_event_name_is_rejected(self):
+    def test_unknown_event_name_is_reported_not_held_against_the_document(self):
+        """A name from a newer schema means a newer producer, not tampering.
+
+        evidence.json sits inside the signed byte range: nobody adds an
+        event to it without breaking layers 2 and 6 first. So an
+        unrecognised name says this file was sealed by something younger
+        than this verifier — the case the N/A rule exists for — and the
+        honest answer is to hand the reader the event as the file states
+        it, not to call a sound document forged.
+        """
         result = validate_delivery(_evidence(_signer_with(_event("email_opened"))))
+        assert result.not_applicable, "must not count against the verdict"
         assert not result.ok
-        assert not result.not_applicable
-        assert "unknown event name" in result.reason
+        assert "email_opened" in result.reason
+        assert result.unknown_events == ["email_opened"]
+
+    def test_an_unknown_event_is_still_carried_through_verbatim(self):
+        """Nothing is hidden from the reader — it is simply not vouched for."""
+        event = _event("email_opened")
+        event["proves"] = "Something this verifier has no wording for."
+        result = validate_delivery(_evidence(_signer_with(event)))
+        carried = result.events[0]
+        assert carried.event == "email_opened"
+        assert carried.known is False
+        assert carried.proves == "Something this verifier has no wording for."
+
+    def test_known_events_alongside_an_unknown_one_still_validate(self):
+        result = validate_delivery(
+            _evidence(_signer_with(_event("provider_accepted"), _event("email_opened")))
+        )
+        assert result.not_applicable
+        assert [e.event for e in result.events] == ["provider_accepted", "email_opened"]
+        assert [e.known for e in result.events] == [True, False]
+
+    def test_a_malformed_known_event_still_fails_even_beside_an_unknown_one(self):
+        """Leniency for the unfamiliar is not leniency for the broken."""
+        broken = _event("tracking_pixel_loaded")
+        del broken["does_not_prove"]
+        result = validate_delivery(
+            _evidence(_signer_with(broken, _event("email_opened")))
+        )
+        assert not result.ok
+        assert not result.not_applicable, "a real defect is not excused"
+        assert "does_not_prove" in result.reason
+
+    def test_an_unknown_event_needs_no_disclaimer_we_cannot_know_it_needs(self):
+        """We do not know a newer event's semantics, so we demand no wording."""
+        bare = {"event": "quantum_delivered", "at": "2026-09-01T08:00:00+00:00"}
+        result = validate_delivery(_evidence(_signer_with(bare)))
+        assert result.not_applicable
+        assert not result.ok
+        assert result.events[0].event == "quantum_delivered"
 
     def test_missing_event_name_is_rejected(self):
         event = _event()

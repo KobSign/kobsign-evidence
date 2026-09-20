@@ -178,3 +178,127 @@ class TestLegitimateIncrementalUpdates:
         )
         assert result.revision_problems
         assert not result.ok
+
+
+class TestTimestampTrust:
+    """Gap 1, second instance — the TSA's own chain must be validated too.
+
+    ``has_timestamp`` used to be set from the mere presence of a timestamp
+    token. Presence is not trust: anyone can stamp a document with a key
+    they made this morning. A timestamp is worth something in court only
+    because the authority behind it chains to a root the reader already
+    trusts, so the chain has to be checked here exactly as the signer's
+    is.
+    """
+
+    def test_untrusted_tsa_is_not_a_qualified_timestamp(
+        self, tmp_path, standalone_timestamped_pdf, signer_identity
+    ):
+        """The signer is trusted, the TSA is not. That is not a green file."""
+        path = _write(tmp_path, "rogue_tsa.pdf", standalone_timestamped_pdf)
+        result = verify_pades(path, extra_trust_roots=[signer_identity.cert_der])
+        signature = result.signatures[0]
+        assert signature.trusted, "the signer's own chain is fine — that is the trap"
+        assert signature.has_timestamp, "a token is present"
+        assert not signature.timestamp_trusted, (
+            "the TSA certificate does not chain to a bundled root"
+        )
+        assert not result.ok
+
+    def test_verify_fails_the_timestamp_layer_for_an_untrusted_tsa(
+        self, tmp_path, standalone_timestamped_pdf
+    ):
+        path = _write(tmp_path, "rogue_tsa.pdf", standalone_timestamped_pdf)
+        result = verify(path)
+        assert not _layer(result, "Qualified timestamp").ok
+        assert not result.verified
+
+    def test_trusting_the_tsa_root_is_what_changes_it(
+        self, tmp_path, standalone_timestamped_pdf, signer_identity, tsa_identity
+    ):
+        path = _write(tmp_path, "rogue_tsa.pdf", standalone_timestamped_pdf)
+        result = verify_pades(
+            path,
+            extra_trust_roots=[signer_identity.cert_der, tsa_identity.cert_der],
+        )
+        signature = result.signatures[0]
+        assert signature.timestamp_trusted
+        assert signature.timestamp_time is not None
+        assert result.ok
+
+    def test_the_timestamp_layer_names_the_tsa_not_the_signer(
+        self, tmp_path, standalone_timestamped_pdf, signer_identity, tsa_identity
+    ):
+        """A report that names the signer where the TSA belongs misleads."""
+        path = _write(tmp_path, "tsa.pdf", standalone_timestamped_pdf)
+        result = verify_pades(
+            path,
+            extra_trust_roots=[signer_identity.cert_der, tsa_identity.cert_der],
+        )
+        assert tsa_identity.common_name in (result.signatures[0].timestamp_authority or "")
+
+    def test_archival_doctimestamp_satisfies_the_timestamp_layer(
+        self, tmp_path, standalone_lta_pdf, signer_identity, tsa_identity
+    ):
+        """PAdES-LTA's timestamp is the DocTimeStamp, not a signature token.
+
+        A document whose only timestamp is archival is still timestamped.
+        Reporting "no qualified timestamp present" for the very shape the
+        tool is named after is a false negative.
+        """
+        path = _write(tmp_path, "lta.pdf", standalone_lta_pdf)
+        result = verify_pades(
+            path,
+            extra_trust_roots=[signer_identity.cert_der, tsa_identity.cert_der],
+        )
+        assert result.doctimestamp_count == 1
+        assert result.trusted_doctimestamp_count == 1
+        assert result.has_qualified_timestamp
+        assert result.ok
+
+    def test_untrusted_archival_doctimestamp_does_not_count(
+        self, tmp_path, standalone_lta_pdf, signer_identity
+    ):
+        path = _write(tmp_path, "lta.pdf", standalone_lta_pdf)
+        result = verify_pades(path, extra_trust_roots=[signer_identity.cert_der])
+        assert result.doctimestamp_count == 1
+        assert result.trusted_doctimestamp_count == 0
+        assert not result.has_qualified_timestamp
+        assert not result.ok
+
+    def test_a_signature_with_no_timestamp_at_all_is_reported_as_such(
+        self, tmp_path, standalone_signed_pdf, signer_identity
+    ):
+        path = _write(tmp_path, "plain.pdf", standalone_signed_pdf)
+        result = verify_pades(path, extra_trust_roots=[signer_identity.cert_der])
+        signature = result.signatures[0]
+        assert not signature.has_timestamp
+        assert not signature.timestamp_trusted
+        assert not result.has_qualified_timestamp
+
+
+class TestPyHankoBottomLine:
+    """pyHanko's own aggregate judgment is the backstop.
+
+    Every layer this tool reports is a claim we make on top of pyHanko's
+    findings. If pyHanko's ``bottom_line`` is negative while all of our
+    layers are green, the disagreement is a hole in our reading of it —
+    and the file must not come out VERIFIED while we work out which.
+    """
+
+    def test_bottom_line_is_recorded_per_signature(
+        self, tmp_path, standalone_signed_pdf, signer_identity
+    ):
+        path = _write(tmp_path, "clean.pdf", standalone_signed_pdf)
+        result = verify_pades(path, extra_trust_roots=[signer_identity.cert_der])
+        assert result.signatures[0].bottom_line is True
+
+    def test_a_negative_bottom_line_is_never_reported_green(
+        self, tmp_path, standalone_timestamped_pdf, signer_identity
+    ):
+        """The rogue-TSA file is exactly this case: pyHanko says no."""
+        path = _write(tmp_path, "rogue_tsa.pdf", standalone_timestamped_pdf)
+        result = verify_pades(path, extra_trust_roots=[signer_identity.cert_der])
+        assert result.signatures[0].bottom_line is False
+        assert not result.ok
+        assert result.validation_problems
