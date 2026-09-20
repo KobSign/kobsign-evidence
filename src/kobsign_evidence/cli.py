@@ -5,6 +5,8 @@ Usage:
     kobsign-evidence document.pdf              # one-line verdict
     kobsign-evidence document.pdf --verbose    # per-layer breakdown
     kobsign-evidence document.pdf --json       # machine-readable output
+    kobsign-evidence document.pdf --qr "<text>"      # check a scanned data QR
+    kobsign-evidence document.pdf --qr-file scan.txt # ...or one saved to a file
     kobsign-evidence --version
 
 Exit codes:
@@ -51,6 +53,31 @@ def _format_delivery(delivery) -> list[str]:
     return lines
 
 
+def _format_qr(qr) -> list[str]:
+    """Render the data QR's findings.
+
+    Checks the tool could not make are printed as such rather than left
+    out. A reader skimming for red flags should be able to see which
+    questions were asked and which went unanswered.
+    """
+    if qr is None or not qr.checks:
+        return []
+    lines = ["", "Data QR:"]
+    if qr.payload is not None:
+        lines.append(f"  koblink id:  {qr.payload.koblink_id}")
+        lines.append(f"  completed:   {qr.payload.completed_at.isoformat()}")
+        levels = ", ".join(
+            f"{name}×{count}" for name, count in qr.payload.levels_by_name.items()
+        )
+        lines.append(f"  signers:     {qr.payload.signer_count} ({levels})")
+    if qr.kid is not None:
+        lines.append(f"  signed by:   key {qr.kid.hex()} ({qr.key_source or 'archived'})")
+    for check in qr.checks:
+        mark = "OK " if check.ok else ("-  " if check.ok is None else "BAD")
+        lines.append(f"  [{mark}] {check.name}: {check.detail}")
+    return lines
+
+
 def _format_verbose(result) -> str:
     lines = []
     for layer in result.layers:
@@ -62,6 +89,7 @@ def _format_verbose(result) -> str:
             mark = "FAIL"
         lines.append(f"  [{mark}] {layer.name}: {layer.detail}")
     lines.extend(_format_delivery(result.delivery))
+    lines.extend(_format_qr(result.qr))
     verdict = "VERIFIED" if result.verified else "FAILED"
     header = (
         f"kobsign-evidence v{__version__}\n"
@@ -82,6 +110,29 @@ def _format_json(result) -> str:
         "canonicalization_version": result.canonicalization_version,
         "layers": [asdict(layer) for layer in result.layers],
     }
+    if result.qr is not None:
+        qr_payload = result.qr.payload
+        payload["qr"] = {
+            "ok": result.qr.ok,
+            "reason": result.qr.reason,
+            "algorithm": result.qr.algorithm,
+            "kid": result.qr.kid.hex() if result.qr.kid else None,
+            "key_source": result.qr.key_source,
+            "payload": None
+            if qr_payload is None
+            else {
+                "version": qr_payload.version,
+                "koblink_id": qr_payload.koblink_id,
+                "document_hash": qr_payload.document_hash.hex(),
+                "evidence_hash": qr_payload.evidence_hash.hex(),
+                "completed_at": qr_payload.completed_at.isoformat(),
+                "signer_count": qr_payload.signer_count,
+                "levels": qr_payload.levels_by_name,
+            },
+            # ``ok: null`` on a check means the check could not be made.
+            # That is not the same as passing and must not read as passing.
+            "checks": [asdict(check) for check in result.qr.checks],
+        }
     if result.delivery is not None and result.delivery.events:
         # Events are emitted with their own proves / does_not_prove strings
         # so a downstream consumer cannot restate the trail more strongly
@@ -119,6 +170,19 @@ def main(argv: list[str] | None = None) -> int:
         help="Emit a machine-readable JSON report instead of the short verdict.",
     )
     parser.add_argument(
+        "--qr",
+        metavar="TEXT",
+        help=(
+            "The data QR payload from the certificate page, as a QR reader "
+            "returns it. Checked against the evidence.json inside the PDF."
+        ),
+    )
+    parser.add_argument(
+        "--qr-file",
+        metavar="PATH",
+        help="Read the data QR payload from a file instead of the command line.",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"kobsign-evidence {__version__}",
@@ -134,7 +198,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: file not found: {args.pdf}", file=sys.stderr)
         return 2
 
-    result = verify(args.pdf)
+    if args.qr and args.qr_file:
+        print(
+            "error: pass either --qr or --qr-file, not both",
+            file=sys.stderr,
+        )
+        return 2
+
+    qr_payload = args.qr
+    if args.qr_file:
+        try:
+            with open(args.qr_file, encoding="utf-8") as handle:
+                qr_payload = handle.read()
+        except OSError as exc:
+            print(f"error: could not read {args.qr_file}: {exc}", file=sys.stderr)
+            return 2
+
+    result = verify(args.pdf, qr_payload=qr_payload)
 
     if args.json:
         print(_format_json(result))

@@ -104,7 +104,7 @@ class TestFullVerifier:
         valid, _ = signed_pdf_pair
         result = verify(str(valid))
         assert result.signature_count >= 1
-        assert len(result.layers) == 8
+        assert len(result.layers) == 9
         # Without test trust roots, layer 3 will fail for the self-signed cert,
         # so the overall result is False. That's expected — the CLI reports
         # a specific layer failure which is what the user sees.
@@ -117,6 +117,7 @@ class TestFullVerifier:
         assert "evidence.json" in layer_names[5]
         assert "Document hashes" in layer_names[6]
         assert "Delivery trail" in layer_names[7]
+        assert "Data QR" in layer_names[8]
 
     def test_self_signed_fails_certificate_chain_without_override(self, signed_pdf_pair):
         """Production invariant: a PDF signed with a random self-signed cert
@@ -149,3 +150,12 @@ class TestFullVerifier:
             layer for layer in result.layers if "Delivery trail" in layer.name
         )
         assert layer8.ok or layer8.na, layer8.detail
+
+    def test_qr_layer_is_not_applicable_when_no_printout_is_in_hand(
+        self, signed_pdf_pair
+    ):
+        """Verifying a file without a QR to compare it to is the normal case."""
+        valid, _ = signed_pdf_pair
+        result = verify(str(valid))
+        layer9 = next(layer for layer in result.layers if "Data QR" in layer.name)
+        assert layer9.na, layer9.detail

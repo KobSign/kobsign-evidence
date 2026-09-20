@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kobsign-evidence"
-version = "0.2.0"
-description = "Independent verifier for KobSign-signed PDF documents. Verifies PAdES-LTA signatures, certificate chains, timestamps, post-signature revisions, and embedded evidence.json integrity without KobSign infrastructure."
+version = "0.3.0"
+description = "Independent verifier for KobSign-signed PDF documents. Verifies PAdES-LTA signatures, certificate chains, timestamps, post-signature revisions, embedded evidence.json integrity and the certificate page's data QR — without KobSign infrastructure."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
@@ -45,7 +45,15 @@ kobsign-evidence = "kobsign_evidence.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-kobsign_evidence = ["trust/*.pem"]
+kobsign_evidence = [
+  "trust/*.pem",
+  # The data-QR public key archive. Rotation adds keys and never removes
+  # them, so this glob deliberately has no version in it — see
+  # keys/README.md.
+  "keys/*.pem",
+  "keys/*.der",
+  "keys/README.md",
+]
 
 [tool.pytest.ini_options]
 # This package is standalone; don't let globally-installed pytest plugins

@@ -1,5 +1,5 @@
 """
-Main verifier — orchestrates eight independent verification layers.
+Main verifier — orchestrates nine independent verification layers.
 
 The verifier never raises from ``verify()``. Every failure mode is
 reported as ``ok=False`` plus a human-readable reason on the layer. A
@@ -16,6 +16,7 @@ from .delivery import DeliveryResult, validate_delivery
 from .evidence import verify_evidence_hash
 from .pades import verify_pades
 from .pdf_extract import extract_attachment, list_attachments
+from .qr import QrResult, verify_data_qr
 
 
 @dataclass
@@ -44,6 +45,8 @@ class VerificationResult:
     # The delivery trail, when the document carries one. Reported verbatim —
     # see the module docstring of ``delivery.py``.
     delivery: DeliveryResult | None = None
+    # The data QR, when the caller supplied one off a printout.
+    qr: QrResult | None = None
 
     @property
     def failed_layer(self) -> LayerResult | None:
@@ -191,6 +194,20 @@ def _layer_6_evidence_hash(pdf_path: str) -> tuple[LayerResult, dict | None, str
             None,
             None,
         )
+    if not isinstance(evidence, dict):
+        # Valid JSON, wrong shape. Every layer below reads fields off this
+        # object; handing them a list would take the whole verifier down
+        # with an exception instead of a verdict.
+        return (
+            LayerResult(
+                "evidence.json integrity",
+                False,
+                "evidence.json is not a JSON object",
+            ),
+            None,
+            None,
+            None,
+        )
 
     result = verify_evidence_hash(evidence)
     detail = (
@@ -294,8 +311,55 @@ def _layer_8_delivery(evidence: dict | None) -> tuple[LayerResult, DeliveryResul
     return LayerResult("Delivery trail", True, detail), result
 
 
-def verify(pdf_path: str) -> VerificationResult:
-    """Run all eight layers and return a combined verification result."""
+def _layer_9_data_qr(
+    evidence: dict | None,
+    qr_payload: str | None,
+    extra_qr_keys: list[bytes] | None,
+) -> tuple[LayerResult, QrResult | None]:
+    """Cross-check the certificate page's data QR against this PDF.
+
+    The QR is read off paper by whoever is holding the printout, so it
+    arrives as text rather than out of the file. No QR supplied means
+    nothing to check — not-applicable. A QR that was supplied and does
+    not stand up is a failure, and never rounded back down to N/A: the
+    whole point of the code is that the paper and the file agree.
+    """
+    result = verify_data_qr(qr_payload, evidence, extra_public_keys=extra_qr_keys)
+    if result.not_applicable:
+        return (
+            LayerResult(
+                "Data QR",
+                False,
+                "no data QR supplied (pass --qr to check one from a printout)",
+                na=True,
+            ),
+            None,
+        )
+    if not result.ok:
+        return LayerResult("Data QR", False, result.reason or "did not verify"), result
+
+    payload = result.payload
+    assert payload is not None  # ok=True implies a parsed payload
+    detail = (
+        f"{result.algorithm} signature by archived key {result.kid.hex()} "
+        f"({result.key_source}); binds this PDF's evidence.json, "
+        f"{payload.signer_count} signer(s)"
+    )
+    return LayerResult("Data QR", True, detail), result
+
+
+def verify(
+    pdf_path: str,
+    *,
+    qr_payload: str | None = None,
+    extra_qr_keys: list[bytes] | None = None,
+) -> VerificationResult:
+    """Run all nine layers and return a combined verification result.
+
+    ``qr_payload`` is the base45 text from a certificate page's data QR,
+    when the reader has one. ``extra_qr_keys`` is for test fixtures, in
+    the same spirit as ``verify_pades(extra_trust_roots=...)``.
+    """
     layer1 = _layer_1_structure(pdf_path)
     layers: list[LayerResult] = [layer1]
     if not layer1.ok:
@@ -314,6 +378,9 @@ def verify(pdf_path: str) -> VerificationResult:
     layer8, delivery = _layer_8_delivery(evidence)
     layers.append(layer8)
 
+    layer9, qr = _layer_9_data_qr(evidence, qr_payload, extra_qr_keys)
+    layers.append(layer9)
+
     # A layer that does not apply to this document (``na=True``) does not
     # count against the overall verdict. Primary integrity (PAdES-LTA,
     # certificate chain, qualified timestamp, post-signature revisions)
@@ -326,4 +393,5 @@ def verify(pdf_path: str) -> VerificationResult:
         evidence_schema_version=schema_version,
         canonicalization_version=canon_version,
         delivery=delivery,
+        qr=qr,
     )
