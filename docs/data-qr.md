@@ -94,17 +94,25 @@ the QR evidence is the binding to the document:
 | document hash | `original_document_hash` in `evidence.json` — **when the two are the same width** (see below) |
 
 Both the payload's key 3 and `evidence.json`'s
-`original_document_hash` are taken over the user's original upload, but
-they have not always been taken with the same algorithm: this package
-has documented that field as SHA3-512 since before the QR existed, and
-a document sealed under schema 3.10.0 carries 64 bytes in it, while the
-payload's field is 32.
+`original_document_hash` are taken over the user's original upload, and
+the signing pipeline writes 32 bytes in both places — the QR builder
+refuses to issue a code for anything else. But this package spent a long
+time documenting that field as SHA3-512, and the sample bundled with the
+repository holds a hand-written placeholder 64 bytes wide, so a file in
+hand is not guaranteed to hold what the format says it holds.
 
-So the comparison is driven by what the file actually holds rather than
-by either belief. Equal widths are compared and can fail the layer;
-unequal widths are printed for a reader holding the original document to
-hash themselves, and nothing is claimed. That is correct under either
-answer, and stays correct when the answer changes.
+The comparison is therefore driven by what the file actually contains.
+Equal widths are compared and can fail the layer; unequal widths are
+printed for a reader holding the original document to hash themselves,
+and nothing is claimed.
+
+Note that **`evidence.json` does not record which algorithm produced
+either digest.** Its `hash_algorithm` field is a compliance label for the
+signature and timestamp — it renders on the cover page as one item in
+"PAdES-LTA (ETSI) · PDF/A-3 (ISO) · SHA-256 · RFC 3161 TSA" — and this
+verifier does not read it as a label on the document hash. A reader
+comparing digests themselves should use SHA-256, which is what KobSign's
+pipeline records here; that is the producer's word, not the document's.
 
 One value is only ever reported:
 

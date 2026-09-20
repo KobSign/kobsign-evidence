@@ -162,7 +162,10 @@ def signed_pdf_pair(tmp_path, backend_available):
     package = DocumentEvidencePackage(
         document_title="Verifier fixture",
         koblink_id="KB-PERSON-VERIFY001-DOC-2026-00001",
-        original_document_hash="a" * 128,  # SHA3-512 hex length
+        # A placeholder, not a digest. The pipeline writes a 64-character
+        # SHA-256 here; this fixture predates that being pinned down and
+        # is left as-is so it keeps exercising the unexpected-width path.
+        original_document_hash="a" * 128,
         signature_standard="PAdES-LTA",
         signatures=[signer],
     )

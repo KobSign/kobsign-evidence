@@ -217,14 +217,17 @@ def _document_hash_check(payload: QrPayload, evidence: dict) -> QrCheck:
     """Compare the QR's document hash against evidence.json's, when they are
     hashes of the same width.
 
-    Both are taken over the user's original upload, but they have not always
-    been taken with the same algorithm: this package has documented
-    ``original_document_hash`` as SHA3-512 since before the QR existed, and a
-    fixture sealed under schema 3.10.0 carries 64 bytes there, while the
-    payload's field is 32. So the comparison is driven by what the file
-    actually holds rather than by either belief: equal widths are compared,
-    unequal widths are reported and nothing is claimed. That is right under
-    either answer, and stays right when the answer changes.
+    Both are taken over the user's original upload, and the pipeline
+    writes 32 bytes in both places. But this package spent a long time
+    documenting ``original_document_hash`` as SHA3-512, and the sample in
+    the repository carries a hand-written placeholder 64 bytes wide, so a
+    file in hand is not guaranteed to hold what the format says it holds.
+
+    The comparison is therefore driven by what the file actually contains
+    rather than by what it ought to: equal widths are compared, unequal
+    widths are reported and nothing is claimed. A mismatched width is not
+    something to fail a document over — but it is not something to
+    silently compare against either.
     """
     recorded = evidence.get("original_document_hash")
     rendered = payload.document_hash.hex()

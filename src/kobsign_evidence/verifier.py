@@ -230,55 +230,51 @@ def _layer_6_evidence_hash(pdf_path: str) -> tuple[LayerResult, dict | None, str
     )
 
 
-# How wide a digest each named algorithm produces, in bits. Used only to
-# tell whether evidence.json's declared ``hash_algorithm`` can be true of
-# the value recorded beside it — never to pick an algorithm on the file's
-# behalf.
-_DIGEST_BITS: dict[str, int] = {
-    "SHA-256": 256,
-    "SHA256": 256,
-    "SHA3-256": 256,
-    "SHA-384": 384,
-    "SHA384": 384,
-    "SHA3-384": 384,
-    "SHA-512": 512,
-    "SHA512": 512,
-    "SHA3-512": 512,
-}
+# What the producing pipeline writes into ``original_document_hash``:
+# SHA-256 of the uploaded file, 32 bytes. The data-QR builder enforces the
+# same width and issues no QR for anything else, so this is an invariant of
+# the format rather than a convention. It is used to flag a digest of
+# another width — never to name the algorithm behind one, which only
+# evidence.json could do and does not.
+EXPECTED_DOCUMENT_DIGEST_BYTES = 32
 
 
-def _describe_digest(orig: str, evidence: dict) -> str:
-    """Say which algorithm produced ``orig``, only as far as the file does.
+def _describe_digest(orig: str) -> str:
+    """Say what is recorded, and say that its algorithm is not stated.
 
-    Width alone cannot distinguish SHA-512 from SHA3-512, so the declared
-    ``hash_algorithm`` is what this reads. But the declaration and the
-    value can disagree — ``prod.pdf`` in this repository declares SHA-256
-    and records 512 bits — and a report that repeats a declaration its own
-    data contradicts puts a false statement in front of a court. So a
-    contradiction is named as one, and neither side is presented as the
-    answer.
+    Two temptations are declined here, and both would put a claim in
+    front of a court that the file never made.
+
+    ``hash_algorithm`` in evidence.json is not read. It is a compliance
+    label — never assigned in the producing codebase, grouped with
+    ``signature_standard`` and ``timestamp_authority``, and rendered on
+    the cover page as one item in "PAdES-LTA (ETSI) · PDF/A-3 (ISO) ·
+    SHA-256 · RFC 3161 TSA". It describes the signature and the
+    timestamp. Reading it as a label on this digest would be inventing a
+    statement out of an unrelated one.
+
+    Nor is the algorithm inferred from the digest's width: a width cannot
+    tell SHA-512 from SHA3-512, and guessing would only dress up the same
+    invention in arithmetic.
+
+    So the reader is told the width, told plainly that the file does not
+    name an algorithm, and told what KobSign's pipeline puts here — the
+    last attributed to the producer rather than to the document, because
+    someone holding the original needs to know what to hash it with.
     """
-    bits = len(orig) * 4
-    declared = evidence.get("hash_algorithm")
-    if not isinstance(declared, str) or not declared.strip():
+    digest_bytes = len(orig) // 2
+    if digest_bytes == EXPECTED_DOCUMENT_DIGEST_BYTES:
         return (
-            f"{bits}-bit digest recorded; its algorithm is not stated in "
-            f"evidence.json, and a width does not name one"
+            f"{digest_bytes}-byte digest recorded; evidence.json does not "
+            f"state which algorithm produced it — KobSign's signing pipeline "
+            f"records SHA-256 here, so hash your copy of the original with "
+            f"SHA-256 to compare"
         )
-
-    declared = declared.strip()
-    expected = _DIGEST_BITS.get(declared.upper())
-    if expected is None:
-        return (
-            f"{bits}-bit digest recorded, declared as {declared}, which this "
-            f"verifier does not recognise"
-        )
-    if expected == bits:
-        return f"{declared} digest recorded, as declared in evidence.json"
     return (
-        f"{bits}-bit digest recorded, but evidence.json declares "
-        f"{declared}, which cannot produce it — the algorithm behind this "
-        f"value is not established"
+        f"{digest_bytes}-byte digest recorded, an unexpected width: this "
+        f"format records {EXPECTED_DOCUMENT_DIGEST_BYTES} bytes. "
+        f"evidence.json does not state which algorithm produced it, so what "
+        f"this value is cannot be established from the file"
     )
 
 
@@ -287,11 +283,10 @@ def _layer_7_document_hashes(pdf_path: str, evidence: dict | None) -> LayerResul
     uploaded PDF bytes.
 
     KobSign stores ``original_document_hash`` — a digest of the uploaded
-    PDF, before any cover page or signature is added, under whatever
-    algorithm ``hash_algorithm`` declares (see ``_describe_digest``; this
-    package assumed SHA3-512 for a long time, and the sample in the
-    repository declares SHA-256 while recording 512 bits, so neither is
-    assumed here). This verifier
+    PDF, before any cover page or signature is added. evidence.json does
+    not record which algorithm produced it; see ``_describe_digest`` for
+    why neither the file's ``hash_algorithm`` field nor the digest's own
+    width is allowed to stand in for that. This verifier
     does NOT have access to the original PDF — it only has the final
     signed PDF, which contains the original PDF's *hash* but not its
     bytes. So this layer verifies internal consistency: the hash field is
@@ -329,8 +324,8 @@ def _layer_7_document_hashes(pdf_path: str, evidence: dict | None) -> LayerResul
     return LayerResult(
         "Document hashes",
         True,
-        f"{_describe_digest(orig, evidence)}; compare against the original "
-        f"PDF in your possession",
+        f"{_describe_digest(orig)}; compare against the original PDF in "
+        f"your possession",
     )
 
 
