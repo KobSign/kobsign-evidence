@@ -454,3 +454,43 @@ class TestMalformedInput:
         )
         result = verify_data_qr(qr, evidence, extra_public_keys=[identity.public_pem])
         assert not result.ok
+
+
+class TestLevelCountEdges:
+    def test_an_explicit_zero_count_is_not_a_disagreement(self, identity, evidence):
+        """{SES: 0, AES: 2} and {AES: 2} say the same thing."""
+        evidence["signatures"] = [
+            {"name": "A", "level": "AES"},
+            {"name": "B", "level": "AES"},
+        ]
+        evidence["evidence_json_hash"] = hashlib.sha256(
+            canonicalize(evidence)
+        ).hexdigest()
+        qr = qr_factory.make_qr(
+            identity,
+            matching_payload(
+                evidence,
+                evidence_hash=evidence_digest(evidence),
+                signer_count=2,
+                levels={1: 0, 2: 2},
+            ),
+        )
+        result = verify_data_qr(qr, evidence, extra_public_keys=[identity.public_pem])
+        assert result.ok, result.reason
+
+    def test_a_signer_without_a_recorded_level_is_reported_not_failed(
+        self, identity, evidence
+    ):
+        evidence["signatures"][1].pop("level")
+        evidence["evidence_json_hash"] = hashlib.sha256(
+            canonicalize(evidence)
+        ).hexdigest()
+        qr = qr_factory.make_qr(
+            identity,
+            matching_payload(evidence, evidence_hash=evidence_digest(evidence)),
+        )
+        result = verify_data_qr(qr, evidence, extra_public_keys=[identity.public_pem])
+        check = next(c for c in result.checks if c.name == "signature levels")
+        assert check.ok is None
+        assert "no signature level" in check.detail
+        assert result.ok, result.reason

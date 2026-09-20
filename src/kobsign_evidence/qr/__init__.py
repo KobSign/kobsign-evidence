@@ -150,23 +150,33 @@ def _cross_check(payload: QrPayload, evidence: dict | None) -> list[QrCheck]:
         )
 
         recorded: dict[str, int] = {}
+        unlabelled = 0
         for signer in signatures:
             level = signer.get("level") if isinstance(signer, dict) else None
-            if isinstance(level, str):
+            if isinstance(level, str) and level:
                 recorded[level] = recorded.get(level, 0) + 1
+            else:
+                unlabelled += 1
         unknown = set(recorded) - set(LEVEL_NAMES.values())
-        if unknown:
+        if unknown or unlabelled:
+            why = (
+                f"records level(s) {', '.join(sorted(unknown))}, which the QR "
+                f"format has no code for"
+                if unknown
+                else f"records no signature level for {unlabelled} signer(s)"
+            )
             checks.append(
-                QrCheck(
-                    "signature levels",
-                    None,
-                    f"evidence.json records level(s) {', '.join(sorted(unknown))}, "
-                    f"which the QR format has no code for",
-                )
+                QrCheck("signature levels", None, f"evidence.json {why}")
             )
         else:
-            claimed = payload.levels_by_name
-            ok = claimed == {name: count for name, count in recorded.items() if count}
+            # A count of zero and an absent entry say the same thing, so
+            # they must not read as a disagreement.
+            claimed = {
+                name: count
+                for name, count in payload.levels_by_name.items()
+                if count
+            }
+            ok = claimed == recorded
             rendered = ", ".join(f"{name}×{count}" for name, count in claimed.items())
             checks.append(
                 QrCheck(
