@@ -63,6 +63,30 @@ def _layer_1_structure(pdf_path: str) -> LayerResult:
     )
 
 
+def _timestamp_reason(overall) -> str:
+    """One line on what backs the document's date, in the honest direction.
+
+    A timestamp token that no bundled root vouches for is not a weaker
+    timestamp, it is a different claim: someone stamped this, and we
+    cannot tell you who. Say that, rather than reporting the token.
+    """
+    if overall.has_qualified_timestamp:
+        authority = next(
+            (s.timestamp_authority for s in overall.signatures if s.timestamp_authority),
+            None,
+        )
+        who = authority or "a bundled qualified TSA"
+        if overall.trusted_doctimestamp_count:
+            return (
+                f"archival DocTimeStamp from {who}, chaining to a bundled "
+                f"trust root"
+            )
+        return f"timestamped by {who}, chaining to a bundled trust root"
+    if overall.timestamp_problems:
+        return "; ".join(overall.timestamp_problems)
+    return "no qualified timestamp present"
+
+
 def _layers_2_3_4_5_pades(
     pdf_path: str,
 ) -> tuple[LayerResult, LayerResult, LayerResult, LayerResult, int]:
@@ -89,26 +113,29 @@ def _layers_2_3_4_5_pades(
             0,
         )
 
-    intact = all(s.intact for s in overall.signatures)
+    intact = all(s.intact for s in overall.signatures) and not overall.other_problems
     trusted = all(s.trusted for s in overall.signatures)
-    has_ts = all(s.has_timestamp for s in overall.signatures)
+    has_ts = overall.has_qualified_timestamp
 
     # Deliberately narrow wording. ``intact`` says the bytes the signature
     # covers still hash to the signed value — nothing about bytes appended
     # afterwards. That is the Post-signature revisions layer's claim to make.
-    intact_reason = "signed byte range is unmodified" if intact else (
-        "the signed bytes have been altered"
-    )
+    if overall.other_problems:
+        intact_reason = "; ".join(overall.other_problems)
+    elif intact:
+        intact_reason = "signed byte range is unmodified"
+    else:
+        intact_reason = "the signed bytes have been altered"
     trusted_reason = (
         "chain resolves to a bundled trust root"
         if trusted
         else "signer certificate does not chain to a trusted root"
     )
-    ts_reason = (
-        f"timestamped by {overall.signatures[0].signer_issuer or 'qualified TSA'}"
-        if has_ts
-        else "no qualified timestamp present"
-    )
+    # Layer 4 is about the authority, not about the token. Name the TSA whose
+    # chain was actually checked — naming the signer's own issuer here, as an
+    # earlier version did, tells a reader the document was timestamped by a
+    # party that never timestamped anything.
+    ts_reason = _timestamp_reason(overall)
 
     if overall.revision_problems:
         revisions_reason = "; ".join(overall.revision_problems)

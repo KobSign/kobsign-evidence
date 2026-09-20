@@ -20,7 +20,7 @@ Eight independent layers:
 | 1 | PDF structure | The file is a well-formed PDF |
 | 2 | PAdES-LTA signature | The bytes the signature covers still hash to the signed value |
 | 3 | Certificate chain | The signer's certificate chains to a bundled, trusted root |
-| 4 | Qualified timestamp | The signature is timestamped by a qualified TSA |
+| 4 | Qualified timestamp | The document is timestamped, and the TSA's own certificate chains to a bundled, trusted root |
 | 5 | Post-signature revisions | Nothing of substance was appended after the last signature |
 | 6 | `evidence.json` integrity | The machine-readable audit trail matches its own SHA-256 hash |
 | 7 | Document hashes | The original document hash is recorded, hex-well-formed, and ready for comparison |
@@ -28,6 +28,14 @@ Eight independent layers:
 
 Every layer reports `OK`, `FAIL` or `N/A` with a specific reason. The
 overall verdict is the single bit courts care about.
+
+Layers 3 and 4 make the same demand of two different parties. A
+timestamp token proves only that someone held a key; it carries weight
+because the authority behind it chains to a root the reader already
+trusts. A token from an authority this tool cannot chain is reported as
+what it is — someone stamped this, and we cannot tell you who — and
+never as a timestamp. That covers the archival DocTimeStamps PAdES-LTA
+is built out of, which is where a document's date usually comes from.
 
 Layers 2 and 5 are separate on purpose. A PDF grows by incremental
 update: new bytes are appended and the original bytes stay exactly as

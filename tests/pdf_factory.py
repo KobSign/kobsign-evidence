@@ -150,13 +150,26 @@ def attach_evidence_json(pdf_bytes: bytes, evidence_bytes: bytes) -> bytes:
         return out.getvalue()
 
 
-def sign(pdf_bytes: bytes, identity: TestIdentity, field_name: str = "Sig1") -> bytes:
-    """Apply one approval signature."""
+def sign(
+    pdf_bytes: bytes,
+    identity: TestIdentity,
+    field_name: str = "Sig1",
+    *,
+    tsa: TestIdentity | None = None,
+) -> bytes:
+    """Apply one approval signature.
+
+    ``tsa`` embeds a signature timestamp token from that identity — the
+    RFC 3161 token a PAdES signature carries in its unsigned attributes,
+    as distinct from the document-level DocTimeStamp that
+    ``add_archival_timestamp`` appends.
+    """
     writer = IncrementalPdfFileWriter(BytesIO(pdf_bytes))
     return signers.sign_pdf(
         writer,
         signers.PdfSignatureMetadata(field_name=field_name),
         signer=identity.pdf_signer(),
+        timestamper=tsa.timestamper() if tsa is not None else None,
     ).getvalue()
 
 

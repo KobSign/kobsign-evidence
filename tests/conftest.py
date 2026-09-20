@@ -81,6 +81,14 @@ def standalone_multi_signer_pdf(signer_identity, standalone_signed_pdf) -> bytes
 
 
 @pytest.fixture(scope="session")
+def standalone_timestamped_pdf(signer_identity, tsa_identity) -> bytes:
+    """One signature carrying an RFC 3161 signature timestamp token."""
+    return pdf_factory.sign(
+        pdf_factory.blank_pdf(), signer_identity, tsa=tsa_identity
+    )
+
+
+@pytest.fixture(scope="session")
 def standalone_lta_pdf(signer_identity, tsa_identity, standalone_signed_pdf) -> bytes:
     """A signature followed by an archival DocTimeStamp — the LTA shape."""
     return pdf_factory.add_archival_timestamp(
