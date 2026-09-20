@@ -380,14 +380,73 @@ class TestCrossCheckAgainstThePdf:
         binding = next(check for check in result.checks if check.name == "evidence.json")
         assert binding.ok is None
 
-    def test_the_document_hash_is_reported_not_claimed(self, identity, evidence):
-        """Different algorithms; saying more than that would be invention."""
+    def test_a_document_hash_of_another_width_is_reported_not_claimed(
+        self, identity, evidence
+    ):
+        """The fixture records 64 bytes; the payload holds 32. No comparison."""
         payload = matching_payload(evidence)
         qr = qr_factory.make_qr(identity, payload)
         result = verify_data_qr(qr, evidence, extra_public_keys=[identity.public_pem])
         check = next(c for c in result.checks if c.name == "document hash")
         assert check.ok is None
+        assert "512-bit" in check.detail
         assert payload[3].hex() in check.detail
+        assert result.ok, result.reason
+
+    def test_a_document_hash_of_the_same_width_is_compared(self, identity, evidence):
+        """Equal widths are compared — whichever algorithm produced them."""
+        original = bytes(range(100, 132))
+        evidence["original_document_hash"] = original.hex()
+        evidence["evidence_json_hash"] = hashlib.sha256(
+            canonicalize(evidence)
+        ).hexdigest()
+        qr = qr_factory.make_qr(
+            identity,
+            matching_payload(
+                evidence,
+                evidence_hash=evidence_digest(evidence),
+                document_hash=original,
+            ),
+        )
+        result = verify_data_qr(qr, evidence, extra_public_keys=[identity.public_pem])
+        check = next(c for c in result.checks if c.name == "document hash")
+        assert check.ok is True
+        assert result.ok, result.reason
+
+    def test_a_document_hash_for_another_upload_is_caught(self, identity, evidence):
+        evidence["original_document_hash"] = bytes(range(100, 132)).hex()
+        evidence["evidence_json_hash"] = hashlib.sha256(
+            canonicalize(evidence)
+        ).hexdigest()
+        qr = qr_factory.make_qr(
+            identity,
+            matching_payload(
+                evidence,
+                evidence_hash=evidence_digest(evidence),
+                document_hash=bytes(32),
+            ),
+        )
+        result = verify_data_qr(qr, evidence, extra_public_keys=[identity.public_pem])
+        check = next(c for c in result.checks if c.name == "document hash")
+        assert check.ok is False
+        assert not result.ok
+
+    @pytest.mark.parametrize("recorded", ["", "zz", "abc", None, 12345])
+    def test_an_unusable_recorded_hash_is_reported_not_failed(
+        self, identity, evidence, recorded
+    ):
+        evidence["original_document_hash"] = recorded
+        evidence["evidence_json_hash"] = hashlib.sha256(
+            canonicalize(evidence)
+        ).hexdigest()
+        qr = qr_factory.make_qr(
+            identity,
+            matching_payload(evidence, evidence_hash=evidence_digest(evidence)),
+        )
+        result = verify_data_qr(qr, evidence, extra_public_keys=[identity.public_pem])
+        check = next(c for c in result.checks if c.name == "document hash")
+        assert check.ok is None
+        assert result.ok, result.reason
 
     def test_an_unmappable_level_in_evidence_is_reported_not_failed(
         self, identity, evidence

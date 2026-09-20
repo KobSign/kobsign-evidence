@@ -200,20 +200,7 @@ def _cross_check(payload: QrPayload, evidence: dict | None) -> list[QrCheck]:
             QrCheck("signer count", None, "evidence.json records no signers")
         )
 
-    # The payload's document hash is 32 bytes; evidence.json records the
-    # original document as SHA3-512. They are hashes of (presumably) the
-    # same thing under different algorithms, so neither can be derived
-    # from the other. Report it for the reader to compare against a
-    # document in their own possession, and claim nothing further.
-    checks.append(
-        QrCheck(
-            "document hash",
-            None,
-            f"the QR records SHA-256 {payload.document_hash.hex()}; "
-            f"evidence.json records the original document under a different "
-            f"algorithm, so the two cannot be compared here",
-        )
-    )
+    checks.append(_document_hash_check(payload, evidence))
 
     checks.append(
         QrCheck(
@@ -224,6 +211,59 @@ def _cross_check(payload: QrPayload, evidence: dict | None) -> list[QrCheck]:
         )
     )
     return checks
+
+
+def _document_hash_check(payload: QrPayload, evidence: dict) -> QrCheck:
+    """Compare the QR's document hash against evidence.json's, when they are
+    hashes of the same width.
+
+    Both are taken over the user's original upload, but they have not always
+    been taken with the same algorithm: this package has documented
+    ``original_document_hash`` as SHA3-512 since before the QR existed, and a
+    fixture sealed under schema 3.10.0 carries 64 bytes there, while the
+    payload's field is 32. So the comparison is driven by what the file
+    actually holds rather than by either belief: equal widths are compared,
+    unequal widths are reported and nothing is claimed. That is right under
+    either answer, and stays right when the answer changes.
+    """
+    recorded = evidence.get("original_document_hash")
+    rendered = payload.document_hash.hex()
+    if not isinstance(recorded, str) or not recorded:
+        return QrCheck(
+            "document hash",
+            None,
+            f"the QR records {rendered}; evidence.json records no original "
+            f"document hash to compare it with",
+        )
+    try:
+        raw = bytes.fromhex(recorded)
+    except ValueError:
+        return QrCheck(
+            "document hash",
+            None,
+            f"the QR records {rendered}; evidence.json's original document "
+            f"hash is not a hex digest, so the two cannot be compared",
+        )
+    if len(raw) != len(payload.document_hash):
+        return QrCheck(
+            "document hash",
+            None,
+            f"the QR records a {len(payload.document_hash) * 8}-bit digest "
+            f"({rendered}); evidence.json records a {len(raw) * 8}-bit digest "
+            f"of the original document, so the two cannot be compared here",
+        )
+    if raw == payload.document_hash:
+        return QrCheck(
+            "document hash",
+            True,
+            f"matches the original document hash in evidence.json ({rendered})",
+        )
+    return QrCheck(
+        "document hash",
+        False,
+        f"the QR records document hash {rendered}, this PDF's evidence.json "
+        f"records {recorded}",
+    )
 
 
 def verify_data_qr(

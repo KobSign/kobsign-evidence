@@ -91,16 +91,25 @@ the QR evidence is the binding to the document:
 | koblink id | `koblink_id` in `evidence.json` |
 | signer count | number of entries in `signatures` |
 | levels | the `level` of each signer (`SES`, `AES`) |
+| document hash | `original_document_hash` in `evidence.json` — **when the two are the same width** (see below) |
 
-Two values are reported and not cross-checked, because claiming more
-would be invention:
+Both the payload's key 3 and `evidence.json`'s
+`original_document_hash` are taken over the user's original upload, but
+they have not always been taken with the same algorithm: this package
+has documented that field as SHA3-512 since before the QR existed, and
+a document sealed under schema 3.10.0 carries 64 bytes in it, while the
+payload's field is 32.
 
-* **document hash** — the payload records 32 bytes (SHA-256);
-  `evidence.json` records the original document under SHA3-512. Neither
-  can be derived from the other, so the verifier prints the value for a
-  reader holding the original document to compare, and says so.
-* **completed** — reported as it stands in the signed payload. It cannot
-  be altered without breaking the signature; it is not checked against
+So the comparison is driven by what the file actually holds rather than
+by either belief. Equal widths are compared and can fail the layer;
+unequal widths are printed for a reader holding the original document to
+hash themselves, and nothing is claimed. That is correct under either
+answer, and stays correct when the answer changes.
+
+One value is only ever reported:
+
+* **completed** — as it stands in the signed payload. It cannot be
+  altered without breaking the signature; it is not checked against
   anything else, and no consistency claim is made from it.
 
 A check that could not be made is printed as `-`, never as `OK`.
