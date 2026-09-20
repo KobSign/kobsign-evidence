@@ -179,3 +179,99 @@ class TestMalformedEvidenceInThePdf:
         assert not result.verified
         assert not _layer(result, "evidence.json").ok
         assert not _layer(result, "Data QR").ok
+
+
+class TestUnknownDeliveryEvent:
+    """An event name from a newer schema must not turn a sound file red."""
+
+    def test_verify_stays_green_on_an_unknown_delivery_event(
+        self, tmp_path, signer_identity
+    ):
+        evidence = {
+            "document_title": "Newer producer",
+            "koblink_id": "KB-PERSON-VERIFY001-DOC-2026-00003",
+            "signatures": [
+                {
+                    "name": "Ola Nordmann",
+                    "level": "AES",
+                    "delivery": {
+                        "events": [
+                            {
+                                "event": "provider_accepted",
+                                "at": "2026-09-01T08:00:00+00:00",
+                                "proves": "Our provider accepted the message.",
+                                "does_not_prove": "That it reached anyone.",
+                            },
+                            {
+                                "event": "signing_completed",
+                                "at": "2026-09-01T09:00:00+00:00",
+                                "proves": "Something newer than this verifier.",
+                            },
+                        ],
+                        "note": "A missing event means it was not recorded.",
+                    },
+                }
+            ],
+            "original_document_hash": "a" * 128,
+            "evidence_json_hash": "",
+            "_schema": {
+                "version": "3.13.0",
+                "type": "DocumentEvidencePackage",
+                "canonicalization_version": "1",
+            },
+        }
+        evidence["evidence_json_hash"] = hashlib.sha256(
+            canonicalize(evidence)
+        ).hexdigest()
+        raw = json.dumps(evidence).encode("utf-8")
+        pdf = pdf_factory.attach_evidence_json(pdf_factory.blank_pdf(), raw)
+        path = tmp_path / "newer_schema.pdf"
+        path.write_bytes(pdf_factory.sign(pdf, signer_identity))
+
+        result = verify(str(path))
+        layer = _layer(result, "Delivery trail")
+        assert layer.na, layer.detail
+        assert "signing_completed" in layer.detail
+        # The known event is still carried, and so is the unknown one.
+        assert result.delivery is not None
+        assert [e.known for e in result.delivery.events] == [True, False]
+
+    def test_the_cli_prints_an_unknown_event_without_vouching_for_it(
+        self, tmp_path, signer_identity, capsys
+    ):
+        evidence = {
+            "document_title": "Newer producer",
+            "signatures": [
+                {
+                    "name": "Ola",
+                    "level": "AES",
+                    "delivery": {
+                        "events": [
+                            {
+                                "event": "signing_completed",
+                                "at": "2026-09-01T09:00:00+00:00",
+                                "proves": "Something newer.",
+                            }
+                        ],
+                        "note": "A missing event means it was not recorded.",
+                    },
+                }
+            ],
+            "original_document_hash": "a" * 128,
+            "evidence_json_hash": "",
+            "_schema": {"version": "3.13.0", "canonicalization_version": "1"},
+        }
+        evidence["evidence_json_hash"] = hashlib.sha256(
+            canonicalize(evidence)
+        ).hexdigest()
+        pdf = pdf_factory.attach_evidence_json(
+            pdf_factory.blank_pdf(), json.dumps(evidence).encode("utf-8")
+        )
+        path = tmp_path / "newer_schema.pdf"
+        path.write_bytes(pdf_factory.sign(pdf, signer_identity))
+
+        main([str(path), "--verbose"])
+        out = capsys.readouterr().out
+        assert "signing_completed" in out
+        assert "not known to this verifier" in out
+        assert "Something newer." in out

@@ -44,10 +44,20 @@ def _format_delivery(delivery) -> list[str]:
             current_signer = event.signer_index
             who = event.signer_name or f"signer {event.signer_index}"
             lines.append(f"  {who}:")
-        lines.append(f"    {event.at}  {event.event}")
-        lines.append(f"      proves:         {event.proves}")
+        marker = "" if event.known else "  [not known to this verifier]"
+        lines.append(f"    {event.at or '(no timestamp)'}  {event.event}{marker}")
+        if event.proves:
+            lines.append(f"      proves:         {event.proves}")
         if event.does_not_prove:
             lines.append(f"      does not prove: {event.does_not_prove}")
+        if not event.known:
+            # Printed, not interpreted. The reader gets the file's own words
+            # and an explicit statement that this tool cannot stand behind
+            # what the name means.
+            lines.append(
+                "      this event is from a newer schema — reported as the "
+                "file states it, vouched for by nothing"
+            )
     for note in delivery.notes:
         lines.append(f"  Note: {note}")
     return lines

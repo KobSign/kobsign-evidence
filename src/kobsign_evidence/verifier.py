@@ -230,12 +230,68 @@ def _layer_6_evidence_hash(pdf_path: str) -> tuple[LayerResult, dict | None, str
     )
 
 
+# How wide a digest each named algorithm produces, in bits. Used only to
+# tell whether evidence.json's declared ``hash_algorithm`` can be true of
+# the value recorded beside it — never to pick an algorithm on the file's
+# behalf.
+_DIGEST_BITS: dict[str, int] = {
+    "SHA-256": 256,
+    "SHA256": 256,
+    "SHA3-256": 256,
+    "SHA-384": 384,
+    "SHA384": 384,
+    "SHA3-384": 384,
+    "SHA-512": 512,
+    "SHA512": 512,
+    "SHA3-512": 512,
+}
+
+
+def _describe_digest(orig: str, evidence: dict) -> str:
+    """Say which algorithm produced ``orig``, only as far as the file does.
+
+    Width alone cannot distinguish SHA-512 from SHA3-512, so the declared
+    ``hash_algorithm`` is what this reads. But the declaration and the
+    value can disagree — ``prod.pdf`` in this repository declares SHA-256
+    and records 512 bits — and a report that repeats a declaration its own
+    data contradicts puts a false statement in front of a court. So a
+    contradiction is named as one, and neither side is presented as the
+    answer.
+    """
+    bits = len(orig) * 4
+    declared = evidence.get("hash_algorithm")
+    if not isinstance(declared, str) or not declared.strip():
+        return (
+            f"{bits}-bit digest recorded; its algorithm is not stated in "
+            f"evidence.json, and a width does not name one"
+        )
+
+    declared = declared.strip()
+    expected = _DIGEST_BITS.get(declared.upper())
+    if expected is None:
+        return (
+            f"{bits}-bit digest recorded, declared as {declared}, which this "
+            f"verifier does not recognise"
+        )
+    if expected == bits:
+        return f"{declared} digest recorded, as declared in evidence.json"
+    return (
+        f"{bits}-bit digest recorded, but evidence.json declares "
+        f"{declared}, which cannot produce it — the algorithm behind this "
+        f"value is not established"
+    )
+
+
 def _layer_7_document_hashes(pdf_path: str, evidence: dict | None) -> LayerResult:
     """Verify ``original_document_hash`` in evidence.json matches the user's
     uploaded PDF bytes.
 
-    KobSign stores ``original_document_hash`` (SHA3-512 of the uploaded
-    PDF, before any cover page / signatures are added). This verifier
+    KobSign stores ``original_document_hash`` — a digest of the uploaded
+    PDF, before any cover page or signature is added, under whatever
+    algorithm ``hash_algorithm`` declares (see ``_describe_digest``; this
+    package assumed SHA3-512 for a long time, and the sample in the
+    repository declares SHA-256 while recording 512 bits, so neither is
+    assumed here). This verifier
     does NOT have access to the original PDF — it only has the final
     signed PDF, which contains the original PDF's *hash* but not its
     bytes. So this layer verifies internal consistency: the hash field is
@@ -270,11 +326,11 @@ def _layer_7_document_hashes(pdf_path: str, evidence: dict | None) -> LayerResul
             False,
             "original_document_hash is not a valid hex digest",
         )
-    algo = "SHA3-512" if len(orig) == 128 else f"{len(orig) * 4}-bit digest"
     return LayerResult(
         "Document hashes",
         True,
-        f"{algo} recorded; compare against the original PDF in your possession",
+        f"{_describe_digest(orig, evidence)}; compare against the original "
+        f"PDF in your possession",
     )
 
 
